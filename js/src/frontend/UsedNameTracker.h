@@ -132,6 +132,8 @@ class UsedNameTracker {
   struct Use {
     uint32_t scriptId;
     uint32_t scopeId;
+    // Whether the name is assigned in this scope or a scope nested in it.
+    bool assigned = false;
   };
 
   class UsedNameInfo {
@@ -162,9 +164,24 @@ class UsedNameTracker {
       return true;
     }
 
-    void noteBoundInScope(uint32_t scriptId, uint32_t scopeId,
-                          bool* closedOver) {
+    // Uses are only appended when entering a new scope, so a later
+    // assignment in an enclosing scope is recorded on the last use, which is
+    // in a scope nested in the current one and will be bound at the same time
+    // or earlier.
+    bool noteAssignedInScope(uint32_t scriptId, uint32_t scopeId) {
+      if (uses_.empty() || uses_.back().scopeId < scopeId) {
+        return uses_.append(Use{scriptId, scopeId, true});
+      }
+      uses_.back().assigned = true;
+      return true;
+    }
+
+    void noteBoundInScope(uint32_t scriptId, uint32_t scopeId, bool* closedOver,
+                          bool* assigned = nullptr) {
       *closedOver = false;
+      if (assigned) {
+        *assigned = false;
+      }
       while (!uses_.empty()) {
         Use& innermost = uses_.back();
         if (innermost.scopeId < scopeId) {
@@ -172,6 +189,9 @@ class UsedNameTracker {
         }
         if (innermost.scriptId > scriptId) {
           *closedOver = true;
+        }
+        if (assigned && innermost.assigned) {
+          *assigned = true;
         }
         uses_.popBack();
       }
@@ -253,6 +273,11 @@ class UsedNameTracker {
   UsedNameMap::Ptr lookup(TaggedParserAtomIndex name) const {
     return map_.lookup(name);
   }
+
+  // Note that |name| is the target of an assignment in the given scope.
+  [[nodiscard]] bool noteAssignment(FrontendContext* fc,
+                                    TaggedParserAtomIndex name,
+                                    uint32_t scriptId, uint32_t scopeId);
 
   [[nodiscard]] bool noteUse(
       FrontendContext* fc, TaggedParserAtomIndex name,

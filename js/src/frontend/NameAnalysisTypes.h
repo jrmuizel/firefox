@@ -164,7 +164,11 @@ class DeclaredNameInfo {
   // If the declared name is a binding, whether the binding is closed
   // over. Its value is meaningless if the declared name is not a binding
   // (i.e., a 'var' declared name in a non-var scope).
-  bool closedOver_;
+  bool closedOver_ : 1;
+
+  // If the declared name is a binding, whether it may be assigned after it's
+  // initialized.
+  bool maybeAssigned_ : 1;
 
   PrivateNameKind privateNameKind_;
 
@@ -180,6 +184,7 @@ class DeclaredNameInfo {
       : pos_(pos),
         kind_(kind),
         closedOver_(bool(closedOver)),
+        maybeAssigned_(false),
         privateNameKind_(PrivateNameKind::None),
         placement_(FieldPlacement::Unspecified) {
     // TODO: present we are brute forcing our way to
@@ -205,6 +210,10 @@ class DeclaredNameInfo {
   void setClosedOver() { closedOver_ = true; }
 
   bool closedOver() const { return closedOver_; }
+
+  void setMaybeAssigned() { maybeAssigned_ = true; }
+
+  bool maybeAssigned() const { return maybeAssigned_; }
 
   void setPrivateNameKind(PrivateNameKind privateNameKind) {
     privateNameKind_ = privateNameKind;

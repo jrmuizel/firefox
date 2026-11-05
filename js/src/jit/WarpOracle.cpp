@@ -1656,7 +1656,7 @@ bool WarpScriptOracle::maybeSnapshotAliasedVar(WarpOpSnapshotList& snapshots,
   bool isConst = false;
   for (ShapePropertyIter<NoGC> iter(nenv->shape()); !iter.done(); iter++) {
     if (iter->hasSlot() && iter->slot() == slot) {
-      isConst = !iter->writable();
+      isConst = !iter->writable() || iter->neverReassignedBinding();
       break;
     }
   }

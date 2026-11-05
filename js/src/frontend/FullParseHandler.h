@@ -1169,6 +1169,10 @@ class FullParseHandler {
     return TaggedParserAtomIndex::null();
   }
 
+  TaggedParserAtomIndex assignedNameAtom(Node node) {
+    return node->as<NameNode>().atom();
+  }
+
   bool reuseLazyInnerFunctions() { return reuseGCThings; }
   bool reuseClosedOverBindings() { return reuseGCThings; }
   bool reuseRegexpSyntaxParse() { return reuseGCThings; }
@@ -1181,6 +1185,13 @@ class FullParseHandler {
     }
 
     return closedOverBindings[lazyClosedOverBindingIndex++];
+  }
+  TaggedParserAtomIndex peekLazyClosedOverBinding() {
+    auto closedOverBindings = previousParseCache_.closedOverBindings();
+    if (lazyClosedOverBindingIndex >= closedOverBindings.Length()) {
+      return TaggedParserAtomIndex::null();
+    }
+    return closedOverBindings[lazyClosedOverBindingIndex];
   }
   const ScriptStencil& cachedScriptData() const {
     // lazyInnerFunctionIndex is incremented with nextLazyInnferFunction before

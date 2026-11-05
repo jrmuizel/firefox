@@ -71,6 +71,24 @@ bool DeclarationKindIsParameter(DeclarationKind kind) {
          kind == DeclarationKind::FormalParameter;
 }
 
+bool UsedNameTracker::noteAssignment(FrontendContext* fc,
+                                     TaggedParserAtomIndex name,
+                                     uint32_t scriptId, uint32_t scopeId) {
+  UsedNameMap::AddPtr p = map_.lookupForAdd(name);
+  if (!p) {
+    UsedNameInfo info(fc, NameVisibility::Public, mozilla::Nothing());
+    if (!map_.add(p, name, std::move(info))) {
+      ReportOutOfMemory(fc);
+      return false;
+    }
+  }
+  if (!p->value().noteAssignedInScope(scriptId, scopeId)) {
+    ReportOutOfMemory(fc);
+    return false;
+  }
+  return true;
+}
+
 bool UsedNameTracker::noteUse(FrontendContext* fc, TaggedParserAtomIndex name,
                               NameVisibility visibility, uint32_t scriptId,
                               uint32_t scopeId,
@@ -283,6 +301,10 @@ bool ParseContext::Scope::propagateAndMarkAnnexBFunctionBoxes(
 
         MOZ_ASSERT(!redeclaredKind);
         funbox->isAnnexB = true;
+
+        // The var binding is assigned when the block-level function is
+        // evaluated.
+        lookupDeclaredName(funbox->explicitName())->value()->setMaybeAssigned();
       }
     }
   } else {
@@ -524,6 +546,9 @@ bool ParseContext::tryDeclareVarHelper(TaggedParserAtomIndex name,
       if (DeclarationKindIsVar(declaredKind)) {
         if (dryRunOption == NotDryRun) {
           RedeclareVar(p, kind);
+          // A redeclared var or function may be assigned by the other
+          // declaration.
+          p->value()->setMaybeAssigned();
         }
       } else if (!DeclarationKindIsParameter(declaredKind)) {
         // Annex B.3.5 allows redeclaring simple (non-destructured)

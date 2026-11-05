@@ -43,6 +43,12 @@ enum class PropertyFlag : uint8_t {
   //
   // This flag is deprecated (we don't want to add more uses).
   CustomDataProperty = 1 << 4,
+
+  // Set for writable environment object bindings that are never assigned
+  // after they're initialized. This doesn't affect the property's semantics,
+  // but lets the JITs treat initialized bindings like const bindings. See
+  // BindingIsNeverReassigned in the frontend.
+  NeverReassignedBinding = 1 << 5,
 };
 
 class PropertyFlags : public EnumFlags<PropertyFlag> {
@@ -54,6 +60,9 @@ class PropertyFlags : public EnumFlags<PropertyFlag> {
 
   static PropertyFlags fromRaw(uint8_t flags) { return PropertyFlags(flags); }
 
+  bool neverReassignedBinding() const {
+    return hasFlag(PropertyFlag::NeverReassignedBinding);
+  }
   bool configurable() const { return hasFlag(PropertyFlag::Configurable); }
   bool enumerable() const { return hasFlag(PropertyFlag::Enumerable); }
   bool writable() const {
@@ -149,6 +158,9 @@ class PropertyInfoBase {
     return PropertyFlags::fromRaw(slotAndFlags_ & FlagsMask);
   }
   bool writable() const { return flags().writable(); }
+  bool neverReassignedBinding() const {
+    return flags().neverReassignedBinding();
+  }
   bool configurable() const { return flags().configurable(); }
   bool enumerable() const { return flags().enumerable(); }
 

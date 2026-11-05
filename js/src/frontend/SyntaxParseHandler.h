@@ -145,6 +145,9 @@ class SyntaxParseHandler {
   TaggedParserAtomIndex lastAtom;
   TokenPos lastStringPos;
 
+  // The last name created by newName.
+  TaggedParserAtomIndex lastNameAtom;
+
  public:
   struct NodeError {};
 
@@ -210,6 +213,7 @@ class SyntaxParseHandler {
 
   NameNodeResult newName(TaggedParserAtomIndex name, const TokenPos& pos) {
     lastAtom = name;
+    lastNameAtom = name;
     if (name == TaggedParserAtomIndex::WellKnown::arguments()) {
       return NodeArgumentsName;
     }
@@ -797,6 +801,14 @@ class SyntaxParseHandler {
            node == NodePotentialAsyncKeyword;
   }
 
+  // The atom of a name node that was just parsed and is an assignment target.
+  // Syntax parse nodes don't store the atom, so this relies on no other name
+  // being created after |node|.
+  TaggedParserAtomIndex assignedNameAtom(Node node) {
+    MOZ_ASSERT(isName(node));
+    return lastNameAtom;
+  }
+
   bool isArgumentsName(Node node) { return node == NodeArgumentsName; }
   bool isLengthName(Node node) { return node == NodeLengthName; }
   bool isEvalName(Node node) { return node == NodeEvalName; }
@@ -834,6 +846,10 @@ class SyntaxParseHandler {
   bool reuseLazyInnerFunctions() { return false; }
   bool reuseClosedOverBindings() { return false; }
   TaggedParserAtomIndex nextLazyClosedOverBinding() {
+    MOZ_CRASH(
+        "SyntaxParseHandler::canSkipLazyClosedOverBindings must return false");
+  }
+  TaggedParserAtomIndex peekLazyClosedOverBinding() {
     MOZ_CRASH(
         "SyntaxParseHandler::canSkipLazyClosedOverBindings must return false");
   }

@@ -120,6 +120,11 @@ class AbstractBindingName<JSAtom> {
 
   bool closedOver() const { return bits_ & ClosedOverFlag; }
 
+  // In scopes other than global and eval scopes, TopLevelFunctionFlag is used
+  // to indicate that a closed over binding is never assigned after it's
+  // initialized.
+  bool isNeverReassigned() const { return bits_ & TopLevelFunctionFlag; }
+
  private:
   friend class BaseAbstractBindingIter<NameT>;
 
@@ -174,6 +179,8 @@ class AbstractBindingName<frontend::TaggedParserAtomIndex> {
   }
 
   bool closedOver() const { return bits_ & ClosedOverFlag; }
+
+  bool isNeverReassigned() const { return bits_ & TopLevelFunctionFlag; }
 
   AbstractBindingName<JSAtom> copyWithNewAtom(JSAtom* newName) const {
     return AbstractBindingName<JSAtom>(newName, closedOver(),
@@ -1530,6 +1537,13 @@ class BaseAbstractBindingIter {
     return result;
   }
 
+  // See AbstractBindingName::isNeverReassigned. Not meaningful for global and
+  // eval scopes.
+  bool isNeverReassigned() const {
+    MOZ_ASSERT(!done());
+    return names_[index_].isNeverReassigned();
+  }
+
   bool hasArgumentSlot() const {
     MOZ_ASSERT(!done());
     if (hasFormalParameterExprs()) {
@@ -1740,6 +1754,7 @@ class WrappedPtrOperations<BindingIter, Wrapper> {
   BindingLocation location() const { return iter().location(); }
   BindingKind kind() const { return iter().kind(); }
   bool isTopLevelFunction() const { return iter().isTopLevelFunction(); }
+  bool isNeverReassigned() const { return iter().isNeverReassigned(); }
   bool hasArgumentSlot() const { return iter().hasArgumentSlot(); }
   uint16_t argumentSlot() const { return iter().argumentSlot(); }
   uint32_t nextFrameSlot() const { return iter().nextFrameSlot(); }
@@ -1783,7 +1798,8 @@ class MutableWrappedPtrOperations<ScopeIter, Wrapper>
 
 SharedShape* CreateEnvironmentShape(JSContext* cx, BindingIter& bi,
                                     const JSClass* cls, uint32_t numSlots,
-                                    ObjectFlags objectFlags);
+                                    ObjectFlags objectFlags,
+                                    bool useNeverReassigned = false);
 
 SharedShape* CreateEnvironmentShapeForSyntheticModule(
     JSContext* cx, const JSClass* cls, uint32_t numSlots,

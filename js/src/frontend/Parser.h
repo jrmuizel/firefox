@@ -399,6 +399,7 @@ class MOZ_STACK_CLASS ParserBase : public ErrorReportMixin {
   // modifier TokenStream::SlashIsDiv, continues a LexicalDeclaration.
   bool nextTokenContinuesLetDeclaration(TokenKind next);
 
+  bool noteAssignedNameInternal(TaggedParserAtomIndex name);
   bool noteUsedNameInternal(TaggedParserAtomIndex name,
                             NameVisibility visibility,
                             mozilla::Maybe<TokenPos> tokenPosition);
@@ -482,6 +483,15 @@ class MOZ_STACK_CLASS PerHandlerParser : public ParserBase {
 
   bool noteDestructuredPositionalFormalParameter(FunctionNodeType funNode,
                                                  Node destruct);
+
+  // Note that |name| is assigned to after it's initialized. This is used to
+  // find bindings that are never reassigned.
+  bool noteAssignedName(TaggedParserAtomIndex name) {
+    if (handler_.reuseClosedOverBindings()) {
+      return true;
+    }
+    return ParserBase::noteAssignedNameInternal(name);
+  }
 
   bool noteUsedName(
       TaggedParserAtomIndex name,
@@ -747,6 +757,7 @@ class MOZ_STACK_CLASS GeneralParser : public PerHandlerParser<ParseHandler> {
   using Base::anyChars;
   using Base::fc_;
   using Base::handler_;
+  using Base::noteAssignedName;
   using Base::noteUsedName;
   using Base::pc_;
   using Base::usedNames_;
@@ -1438,8 +1449,8 @@ class MOZ_STACK_CLASS GeneralParser : public PerHandlerParser<ParseHandler> {
       Node expr, TokenPos exprPos, PossibleError* exprPossibleError,
       PossibleError* possibleError,
       TargetBehavior behavior = TargetBehavior::PermitAssignmentPattern);
-  void checkDestructuringAssignmentName(NameNodeType name, TokenPos namePos,
-                                        PossibleError* possibleError);
+  [[nodiscard]] bool checkDestructuringAssignmentName(
+      NameNodeType name, TokenPos namePos, PossibleError* possibleError);
   bool checkDestructuringAssignmentElement(Node expr, TokenPos exprPos,
                                            PossibleError* exprPossibleError,
                                            PossibleError* possibleError);
@@ -1730,6 +1741,7 @@ class MOZ_STACK_CLASS Parser<FullParseHandler, Unit> final
   using Base::newModuleScopeData;
   using Base::newName;
   using Base::newVarScopeData;
+  using Base::noteAssignedName;
   using Base::noteDeclaredName;
   using Base::noteUsedName;
   using Base::null;

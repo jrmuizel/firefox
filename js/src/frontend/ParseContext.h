@@ -374,6 +374,16 @@ class MOZ_STACK_CLASS ParseContext : public Nestable<ParseContext> {
         return declaredIter_.get().value()->setClosedOver();
       }
 
+      bool maybeAssigned() {
+        MOZ_ASSERT(!done());
+        return declaredIter_.get().value()->maybeAssigned();
+      }
+
+      void setMaybeAssigned() {
+        MOZ_ASSERT(!done());
+        return declaredIter_.get().value()->setMaybeAssigned();
+      }
+
       void operator++(int) {
         MOZ_ASSERT(!done());
         MOZ_ASSERT(count_ != UINT32_MAX);

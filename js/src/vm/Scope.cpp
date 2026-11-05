@@ -103,7 +103,7 @@ SharedShape* js::EmptyEnvironmentShape(JSContext* cx, const JSClass* cls,
 
 static bool AddToEnvironmentMap(JSContext* cx, const JSClass* clasp,
                                 HandleId id, BindingKind bindKind,
-                                uint32_t slot,
+                                bool neverReassigned, uint32_t slot,
                                 MutableHandle<SharedPropMap*> map,
                                 uint32_t* mapLength, ObjectFlags* objectFlags) {
   PropertyFlags propFlags = {PropertyFlag::Enumerable};
@@ -115,6 +115,9 @@ static bool AddToEnvironmentMap(JSContext* cx, const JSClass* clasp,
       break;
     default:
       propFlags.setFlag(PropertyFlag::Writable);
+      if (neverReassigned) {
+        propFlags.setFlag(PropertyFlag::NeverReassignedBinding);
+      }
       break;
   }
 
@@ -124,7 +127,8 @@ static bool AddToEnvironmentMap(JSContext* cx, const JSClass* clasp,
 
 SharedShape* js::CreateEnvironmentShape(JSContext* cx, BindingIter& bi,
                                         const JSClass* cls, uint32_t numSlots,
-                                        ObjectFlags objectFlags) {
+                                        ObjectFlags objectFlags,
+                                        bool useNeverReassigned) {
   Rooted<SharedPropMap*> map(cx);
   uint32_t mapLength = 0;
 
@@ -135,8 +139,9 @@ SharedShape* js::CreateEnvironmentShape(JSContext* cx, BindingIter& bi,
       JSAtom* name = bi.name();
       MOZ_ASSERT(ZoneHasRef(cx->zone(), name));
       id = NameToId(name->asPropertyName());
-      if (!AddToEnvironmentMap(cx, cls, id, bi.kind(), loc.slot(), &map,
-                               &mapLength, &objectFlags)) {
+      bool neverReassigned = useNeverReassigned && bi.isNeverReassigned();
+      if (!AddToEnvironmentMap(cx, cls, id, bi.kind(), neverReassigned,
+                               loc.slot(), &map, &mapLength, &objectFlags)) {
         return nullptr;
       }
     }
@@ -1595,8 +1600,13 @@ bool ScopeStencil::createSpecificShape(
   if (hasEnvironmentShape()) {
     if (numEnvironmentSlots() > 0) {
       BindingIter bi(kind, scopeData, firstFrameSlot_);
+      // In global and eval scopes, the flag for isNeverReassigned is used
+      // for isTopLevelFunction instead.
+      bool useNeverReassigned =
+          kind != ScopeKind::Eval && kind != ScopeKind::StrictEval &&
+          kind != ScopeKind::Global && kind != ScopeKind::NonSyntactic;
       shape.set(CreateEnvironmentShape(cx, bi, cls, numEnvironmentSlots(),
-                                       objectFlags));
+                                       objectFlags, useNeverReassigned));
       return shape;
     }
 

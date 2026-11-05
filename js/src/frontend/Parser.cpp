@@ -881,6 +881,16 @@ bool GeneralParser<ParseHandler, Unit>::noteDeclaredPrivateName(
   return true;
 }
 
+bool ParserBase::noteAssignedNameInternal(TaggedParserAtomIndex name) {
+  // See noteUsedNameInternal.
+  ParseContext::Scope* scope = pc_->innermostScope();
+  if (pc_->sc()->isGlobalContext() && scope == &pc_->varScope() &&
+      !this->compilationState_.input.hasExtraBindings()) {
+    return true;
+  }
+  return usedNames_.noteAssignment(fc_, name, pc_->scriptId(), scope->id());
+}
+
 bool ParserBase::noteUsedNameInternal(TaggedParserAtomIndex name,
                                       NameVisibility visibility,
                                       mozilla::Maybe<TokenPos> tokenPosition) {
@@ -920,9 +930,17 @@ bool PerHandlerParser<ParseHandler>::
     // Closed over bindings for all scopes are stored in a contiguous array, in
     // the same order as the order in which scopes are visited, and seprated by
     // TaggedParserAtomIndex::null().
+    // A closed over binding that is never assigned after initialization is
+    // stored twice in a row.
     uint32_t slotCount = scope.declaredCount();
     while (auto parserAtom = handler_.nextLazyClosedOverBinding()) {
-      scope.lookupDeclaredName(parserAtom)->value()->setClosedOver();
+      DeclaredNamePtr p = scope.lookupDeclaredName(parserAtom);
+      p->value()->setClosedOver();
+      if (handler_.peekLazyClosedOverBinding() == parserAtom) {
+        handler_.nextLazyClosedOverBinding();
+      } else {
+        p->value()->setMaybeAssigned();
+      }
       MOZ_ASSERT(slotCount > 0);
       slotCount--;
     }
@@ -942,12 +960,22 @@ bool PerHandlerParser<ParseHandler>::
   for (BindingIter bi = scope.bindings(pc_); bi; bi++) {
     bool closedOver = false;
     if (UsedNamePtr p = usedNames_.lookup(bi.name())) {
-      p->value().noteBoundInScope(scriptId, scopeId, &closedOver);
+      bool assigned = false;
+      p->value().noteBoundInScope(scriptId, scopeId, &closedOver, &assigned);
+      if (assigned) {
+        bi.setMaybeAssigned();
+      }
       if (closedOver) {
         bi.setClosedOver();
 
         if constexpr (isSyntaxParser) {
           if (!pc_->closedOverBindingsForLazy().append(
+                  TrivialTaggedParserAtomIndex::from(bi.name()))) {
+            ReportOutOfMemory(fc_);
+            return false;
+          }
+          if (!bi.maybeAssigned() &&
+              !pc_->closedOverBindingsForLazy().append(
                   TrivialTaggedParserAtomIndex::from(bi.name()))) {
             ReportOutOfMemory(fc_);
             return false;
@@ -1147,6 +1175,28 @@ Maybe<GlobalScope::ParserData*> ParserBase::newGlobalScopeData(
   return NewGlobalScopeData(fc_, scope, stencilAlloc(), pc_);
 }
 
+// Whether a closed over binding is never assigned after its initialization, so
+// its value is constant for a given environment object. This only applies to
+// function declarations, which are initialized when the environment is created,
+// and to lexical bindings, which are uninitialized until their declaration.
+static bool BindingIsNeverReassigned(ParseContext* pc, BindingIter& bi) {
+  if (pc->sc()->bindingsAccessedDynamically()) {
+    return false;
+  }
+  if (!bi.closedOver() || bi.maybeAssigned()) {
+    return false;
+  }
+  switch (bi.declarationKind()) {
+    case DeclarationKind::BodyLevelFunction:
+    case DeclarationKind::ModuleBodyLevelFunction:
+    case DeclarationKind::Let:
+    case DeclarationKind::Class:
+      return true;
+    default:
+      return false;
+  }
+}
+
 static Maybe<ModuleScope::ParserData*> NewModuleScopeData(
     FrontendContext* fc, ParseContext::Scope& scope, LifoAlloc& alloc,
     ParseContext* pc) {
@@ -1163,7 +1213,8 @@ static Maybe<ModuleScope::ParserData*> NewModuleScopeData(
     // Imports are indirect bindings and must not be given known slots.
     ParserBindingName binding(bi.name(),
                               (allBindingsClosedOver || bi.closedOver()) &&
-                                  bi.kind() != BindingKind::Import);
+                                  bi.kind() != BindingKind::Import,
+                              BindingIsNeverReassigned(pc, bi));
     switch (bi.kind()) {
       case BindingKind::Import:
         if (!imports.append(binding)) {
@@ -1313,7 +1364,8 @@ Maybe<FunctionScope::ParserData*> ParserBase::newFunctionScopeData(
 
   for (BindingIter bi = scope.bindings(pc_); bi; bi++) {
     ParserBindingName binding(bi.name(),
-                              allBindingsClosedOver || bi.closedOver());
+                              allBindingsClosedOver || bi.closedOver(),
+                              BindingIsNeverReassigned(pc_, bi));
     switch (bi.kind()) {
       case BindingKind::FormalParameter:
         // Positional parameter names are already handled above.
@@ -1414,7 +1466,8 @@ static Maybe<VarScope::ParserData*> NewVarScopeData(FrontendContext* fc,
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
     if (bi.kind() == BindingKind::Var) {
       ParserBindingName binding(bi.name(),
-                                allBindingsClosedOver || bi.closedOver());
+                                allBindingsClosedOver || bi.closedOver(),
+                                BindingIsNeverReassigned(pc, bi));
       if (!vars.append(binding)) {
         return Nothing();
       }
@@ -1470,7 +1523,8 @@ static Maybe<LexicalScope::ParserData*> NewLexicalScopeData(
 
   for (BindingIter bi = scope.bindings(pc); bi; bi++) {
     ParserBindingName binding(bi.name(),
-                              allBindingsClosedOver || bi.closedOver());
+                              allBindingsClosedOver || bi.closedOver(),
+                              BindingIsNeverReassigned(pc, bi));
     switch (bi.kind()) {
       case BindingKind::Let:
         if (!lets.append(binding)) {
@@ -6696,6 +6750,9 @@ bool GeneralParser<ParseHandler, Unit>::forHeadStart(
         return false;
       }
     }
+    if (!noteAssignedName(handler_.assignedNameAtom(*forInitialPart))) {
+      return false;
+    }
   } else if (handler_.isArgumentsLength(*forInitialPart)) {
     pc_->sc()->setIneligibleForArgumentsLength();
   } else if (handler_.isPropertyOrPrivateMemberAccess(*forInitialPart)) {
@@ -10408,6 +10465,9 @@ typename ParseHandler::NodeResult GeneralParser<ParseHandler, Unit>::assignExpr(
         return errorResult();
       }
     }
+    if (!noteAssignedName(handler_.assignedNameAtom(lhs))) {
+      return errorResult();
+    }
   } else if (handler_.isArgumentsLength(lhs)) {
     pc_->sc()->setIneligibleForArgumentsLength();
   } else if (handler_.isPropertyOrPrivateMemberAccess(lhs)) {
@@ -10469,6 +10529,9 @@ bool GeneralParser<ParseHandler, Unit>::checkIncDecOperand(
       if (!strictModeErrorAt(operandOffset, JSMSG_BAD_STRICT_ASSIGN, chars)) {
         return false;
       }
+    }
+    if (!noteAssignedName(handler_.assignedNameAtom(operand))) {
+      return false;
     }
   } else if (handler_.isArgumentsLength(operand)) {
     pc_->sc()->setIneligibleForArgumentsLength();
@@ -11629,9 +11692,8 @@ bool GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentTarget(
   }
 
   if (handler_.isName(expr)) {
-    checkDestructuringAssignmentName(handler_.asNameNode(expr), exprPos,
-                                     possibleError);
-    return true;
+    return checkDestructuringAssignmentName(handler_.asNameNode(expr), exprPos,
+                                            possibleError);
   }
 
   if (handler_.isUnparenthesizedDestructuringPattern(expr)) {
@@ -11658,7 +11720,7 @@ bool GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentTarget(
 }
 
 template <class ParseHandler, typename Unit>
-void GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentName(
+bool GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentName(
     NameNodeType name, TokenPos namePos, PossibleError* possibleError) {
 #ifdef DEBUG
   // GCC 8.0.1 crashes if this is a one-liner.
@@ -11666,9 +11728,13 @@ void GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentName(
   MOZ_ASSERT(isName);
 #endif
 
+  if (!noteAssignedName(handler_.assignedNameAtom(name))) {
+    return false;
+  }
+
   // Return early if a pending destructuring error is already present.
   if (possibleError->hasPendingDestructuringError()) {
-    return;
+    return true;
   }
 
   if (handler_.isArgumentsLength(name)) {
@@ -11679,14 +11745,15 @@ void GeneralParser<ParseHandler, Unit>::checkDestructuringAssignmentName(
     if (handler_.isArgumentsName(name)) {
       possibleError->setPendingDestructuringErrorAt(
           namePos, JSMSG_BAD_STRICT_ASSIGN_ARGUMENTS);
-      return;
+      return true;
     }
     if (handler_.isEvalName(name)) {
       possibleError->setPendingDestructuringErrorAt(
           namePos, JSMSG_BAD_STRICT_ASSIGN_EVAL);
-      return;
+      return true;
     }
   }
+  return true;
 }
 
 template <class ParseHandler, typename Unit>
@@ -12251,8 +12318,9 @@ GeneralParser<ParseHandler, Unit>::objectLiteral(YieldHandling yieldHandling,
 
         NameNodeType nameExpr = MOZ_TRY(identifierReference(name));
 
-        if (possibleError) {
-          checkDestructuringAssignmentName(nameExpr, namePos, possibleError);
+        if (possibleError && !checkDestructuringAssignmentName(
+                                 nameExpr, namePos, possibleError)) {
+          return errorResult();
         }
 
         if (!handler_.addShorthand(literal, handler_.asNameNode(propName),

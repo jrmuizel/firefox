@@ -7,6 +7,7 @@
 #include "builtin/Array.h"
 #include "builtin/ModuleObject.h"
 #include "gc/PublicIterators.h"
+#include "jit/Invalidation.h"
 #include "js/EnvironmentChain.h"  // JS::EnvironmentChain
 #include "js/Exception.h"
 #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
@@ -18,6 +19,7 @@
 #include "vm/BytecodeLocation.h"
 #include "vm/GeneratorObject.h"  // js::GetGeneratorObjectForEnvironment
 #include "vm/GlobalObject.h"
+#include "vm/HelperThreads.h"
 #include "vm/JSObject.h"
 #include "vm/ProxyObject.h"
 #include "vm/Realm.h"
@@ -1679,6 +1681,25 @@ namespace {
  *    proxy can either hide these optimizations or make the situation more
  *    clear to the debugger. An example is 'arguments'.
  */
+// Called when the debugger assigns a binding that the frontend determined is
+// never reassigned. Ion code may have folded the binding's value, so
+// invalidate all Ion code in the zone.
+static void InvalidateIonCodeForReassignedBinding(JSContext* cx, Zone* zone) {
+  CancelOffThreadIonCompile(zone);
+  jit::IonScriptKeyVector invalid;
+  for (auto base = zone->cellIter<BaseScript>(); !base.done(); base.next()) {
+    if (!base->hasJitScript()) {
+      continue;
+    }
+    JSScript* script = base->asJSScript();
+    if (script->hasIonScript()) {
+      AutoRealm ar(cx, script);
+      jit::AddPendingInvalidation(invalid, script);
+    }
+  }
+  jit::Invalidate(cx, invalid);
+}
+
 class DebugEnvironmentProxyHandler : public NurseryAllocableProxyHandler {
   enum Action { SET, GET };
 
@@ -2488,6 +2509,12 @@ class DebugEnvironmentProxyHandler : public NurseryAllocableProxyHandler {
             initialVal.whyMagic() == JS_UNINITIALIZED_LEXICAL) {
           ReportRuntimeLexicalErrorId(cx, JSMSG_UNINITIALIZED_LEXICAL, id);
           return false;
+        }
+
+        if (mozilla::Maybe<PropertyInfo> prop = env->lookup(cx, id);
+            prop.isSome() && prop->neverReassignedBinding()) {
+          // Ion code may have treated the binding as constant.
+          InvalidateIonCodeForReassignedBinding(cx, env->zone());
         }
 
         return SetProperty(cx, env, id, v, envVal, result);
