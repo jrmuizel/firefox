@@ -13288,6 +13288,9 @@ bool InitOptionParser(OptionParser& op) {
       !op.addStringOption('\0', "ion-shared-stubs", "on/off",
                           "Use shared stubs (default: on, off to disable)") ||
       !op.addStringOption(
+          '\0', "baseline-inline-ic", "on/off",
+          "Enable baseline inline IC recipes (default: on, off to disable)") ||
+      !op.addStringOption(
           '\0', "stub-folding", "on/off",
           "Enable stub folding (default: on, off to disable)") ||
       !op.addStringOption('\0', "stub-folding-loads-and-stores", "on/off",
@@ -14205,6 +14208,16 @@ bool SetContextJITOptions(JSContext* cx, const OptionParser& op) {
       jit::JitOptions.disableCacheIR = true;
     } else {
       return OptionFailure("cache-ir-stubs", str);
+    }
+  }
+
+  if (const char* str = op.getStringOption("baseline-inline-ic")) {
+    if (strcmp(str, "on") == 0) {
+      jit::JitOptions.disableBaselineInlineIC = false;
+    } else if (strcmp(str, "off") == 0) {
+      jit::JitOptions.disableBaselineInlineIC = true;
+    } else {
+      return OptionFailure("baseline-inline-ic", str);
     }
   }
 

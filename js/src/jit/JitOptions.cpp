@@ -113,6 +113,9 @@ DefaultJitOptions::DefaultJitOptions() {
   // Toggles whether CacheIR stubs are used.
   SET_DEFAULT(disableCacheIR, false);
 
+  // Toggles whether inline IC recipes are emitted in baseline code.
+  SET_DEFAULT(disableBaselineInlineIC, false);
+
   // Toggles whether stubs are folded.
   SET_DEFAULT(disableStubFolding, false);
 

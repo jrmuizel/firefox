@@ -23,6 +23,7 @@ UNIFIED_SOURCES += [
     "BaselineFrame.cpp",
     "BaselineFrameInfo.cpp",
     "BaselineIC.cpp",
+    "BaselineInlineIC.cpp",
     "BaselineJIT.cpp",
     "BitSet.cpp",
     "BranchHinting.cpp",

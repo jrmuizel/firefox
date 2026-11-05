@@ -7,6 +7,7 @@
 #include "mozilla/RandomNum.h"
 
 #include "gc/GC.h"
+#include "jit/BaselineInlineIC.h"
 #include "jit/CacheIR.h"
 #include "jit/CacheIRAOT.h"
 #include "jit/CacheIRSpewer.h"
@@ -2340,6 +2341,23 @@ ICAttachResult js::jit::AttachBaselineCacheIRStubLocked(
       break;
     case TrialInliningState::Failure:
       break;
+  }
+
+  // Mark the new stub if its CacheIR matches the default inline recipe for
+  // this op and it will be the first (only) optimized stub. The baseline
+  // compiler emits an inline fast path that checks this flag on firstStub.
+  // When a second stub is later prepended, the new stub won't have the flag,
+  // so the inline path is automatically disabled.
+  if (!JitOptions.disableBaselineInlineIC &&
+      stub->state().newStubIsFirstStub()) {
+    jsbytecode* pc = outerScript->offsetToPC(stub->pcOffset());
+    JSOp op = JSOp(*pc);
+    InlineICRecipe recipe = InlineRecipeForOp(op, stubInfo);
+    if (recipe != InlineICRecipe::None) {
+      newStub->setSafeForInline();
+    }
+  } else {
+    newStub->clearSafeForInline();
   }
 
   stub->addNewStub(icEntry, newStub);

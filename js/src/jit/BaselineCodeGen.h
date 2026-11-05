@@ -207,6 +207,17 @@ class BaselineCodeGen {
   [[nodiscard]] bool emitGetAliasedDebugVar(ValueOperand dest);
 
   [[nodiscard]] bool emitNextIC();
+  void emitInlineGetPropFixedSlot(Label* failure, Label* done);
+  void emitInlineGetPropDynamicSlot(Label* failure, Label* done);
+  void emitInlineGuardBooleanResult(Label* failure, Label* done);
+  void emitInlineInitPropFixedSlot(Label* failure, Label* done);
+  void emitInlineCompareInt32(Assembler::Condition cond, Label* failure,
+                              Label* done);
+  void emitInlineGuardInt32Identity(Label* failure, Label* done);
+  void emitInlineLoadValueResult(Label* done);
+  void emitInlineIncInt32(Label* failure, Label* done);
+  void emitInlineBitAndInt32(Label* failure, Label* done);
+  void emitInlineLambdaFunctionClone(Label* failure, Label* done);
   [[nodiscard]] bool emitInterruptCheck();
   [[nodiscard]] bool emitWarmUpCounterIncrement();
 

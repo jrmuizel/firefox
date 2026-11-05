@@ -11,6 +11,7 @@
 #include "jit/BaselineCompileQueue.h"
 #include "jit/BaselineCompileTask.h"
 #include "jit/BaselineIC.h"
+#include "jit/BaselineInlineIC.h"
 #include "jit/BaselineJIT.h"
 #include "jit/CacheIRCompiler.h"
 #include "jit/CacheIRGenerator.h"
@@ -28,6 +29,7 @@
 #include "jit/TrialInlining.h"
 #include "jit/VMFunctions.h"
 #include "js/friend/ErrorMessages.h"  // JSMSG_*
+#include "js/shadow/Object.h"         // JS::shadow::Object
 #include "js/UniquePtr.h"
 #include "vm/AsyncFunction.h"
 #include "vm/AsyncIteration.h"
@@ -784,6 +786,8 @@ bool BaselineCompilerCodeGen::emitNextIC() {
   JSScript* script = handler.script();
   uint32_t pcOffset = script->pcToOffset(handler.pc());
 
+  JSOp op = JSOp(*handler.pc());
+
   // We don't use every ICEntry and we can skip unreachable ops, so we have
   // to loop until we find an ICEntry for the current pc.
   const ICFallbackStub* stub;
@@ -802,10 +806,74 @@ bool BaselineCompilerCodeGen::emitNextIC() {
     return false;
   }
 
+  InlineICRecipe inlineRecipe = InlineICRecipe::None;
+  if (!JitOptions.disableBaselineInlineIC) {
+    if (handler.compilingOffThread()) {
+      inlineRecipe = InlineRecipeForOp(op, nullptr);
+    } else if (stub->canHaveInlineStub() && stub->numOptimizedStubs() == 0) {
+      inlineRecipe = InlineRecipeForOp(op, nullptr);
+    } else if (stub->canHaveInlineStub()) {
+      MOZ_ASSERT(stub->numOptimizedStubs() == 1);
+      ICEntry* icEntry = &script->jitScript()->icEntry(entryIndex);
+      const CacheIRStubInfo* stubInfo =
+          icEntry->firstStub()->toCacheIRStub()->stubInfo();
+      inlineRecipe = InlineRecipeForOp(op, stubInfo);
+    }
+  }
+
   // Load stub pointer into ICStubReg.
   masm.loadPtr(frame.addressOfICScript(), ICStubReg);
   size_t firstStubOffset = ICScript::offsetOfFirstStub(entryIndex);
   masm.loadPtr(Address(ICStubReg, firstStubOffset), ICStubReg);
+
+  Label done;
+  if (inlineRecipe != InlineICRecipe::None) {
+    Label slowPath, failure;
+    // Test hasInlineRecipe flag directly on the firstStub.
+    masm.branchTest32(Assembler::Zero,
+                      Address(ICStubReg, ICStub::offsetOfFlags()),
+                      Imm32(uint32_t(ICStub::Flags::SafeForInline)), &slowPath);
+
+    switch (inlineRecipe) {
+      case InlineICRecipe::GetProp_FixedSlot:
+        emitInlineGetPropFixedSlot(&failure, &done);
+        break;
+      case InlineICRecipe::GetProp_DynamicSlot:
+        emitInlineGetPropDynamicSlot(&failure, &done);
+        break;
+      case InlineICRecipe::JumpIfFalse_Boolean:
+        emitInlineGuardBooleanResult(&failure, &done);
+        break;
+      case InlineICRecipe::InitProp_FixedSlot:
+        emitInlineInitPropFixedSlot(&failure, &done);
+        break;
+      case InlineICRecipe::Compare_Int32_Lt:
+        emitInlineCompareInt32(Assembler::LessThan, &failure, &done);
+        break;
+      case InlineICRecipe::ToNumeric_Int32:
+        emitInlineGuardInt32Identity(&failure, &done);
+        break;
+      case InlineICRecipe::GetIntrinsic_Value:
+        emitInlineLoadValueResult(&done);
+        break;
+      case InlineICRecipe::Inc_Int32:
+        emitInlineIncInt32(&failure, &done);
+        break;
+      case InlineICRecipe::BitAnd_Int32:
+        emitInlineBitAndInt32(&failure, &done);
+        break;
+      case InlineICRecipe::Compare_Int32_Ge:
+        emitInlineCompareInt32(Assembler::GreaterThanOrEqual, &failure, &done);
+        break;
+      case InlineICRecipe::None:
+        MOZ_CRASH("unreachable");
+    }
+
+    masm.bind(&failure);
+    masm.loadPtr(Address(ICStubReg, ICCacheIRStub::offsetOfNext()), ICStubReg);
+
+    masm.bind(&slowPath);
+  }
 
   RetAddrEntry::Kind kind = RetAddrEntry::Kind::IC;
   ensureDebugModeOSRPointSpace();
@@ -813,7 +881,13 @@ bool BaselineCompilerCodeGen::emitNextIC() {
   CodeOffset returnOffset;
   EmitCallIC(masm, &returnOffset);
 
-  return handler.recordCallRetAddr(kind, returnOffset.offset());
+  if (!handler.recordCallRetAddr(kind, returnOffset.offset())) {
+    return false;
+  }
+
+  masm.bind(&done);
+
+  return true;
 }
 
 template <>
@@ -836,6 +910,222 @@ bool BaselineInterpreterCodeGen::emitNextIC() {
   }
 
   return true;
+}
+
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineGetPropFixedSlot(Label* failure,
+                                                          Label* done) {
+  // Inline fast path for GetProp with a fixed-slot property on a shaped
+  // NativeObject. R0 holds the input Value (the object). On success, the
+  // result is written to R0 and we jump to |done|. On failure we fall through
+  // to |failure|.
+  //
+  // Stub data layout (at stubReg + sizeof(ICCacheIRStub)):
+  //   [WeakShape @ offset 0]
+  //   [RawInt32 slot_offset @ sizeof(uintptr_t)]
+
+  static constexpr size_t stubDataStart = sizeof(ICCacheIRStub);
+  static constexpr size_t shapeFieldOffset = stubDataStart;
+  static constexpr size_t slotFieldOffset = stubDataStart + sizeof(uintptr_t);
+
+  // Register plan (must not clobber R0 before failure):
+  //   obj      = R1.scratchReg() = unboxed object
+  //   ICStubReg holds the first ICStub
+  Register obj = R1.scratchReg();
+  Register scratch = R2.scratchReg();
+
+  // Guard: R0 is an object.
+  masm.branchTestObject(Assembler::NotEqual, R0, failure);
+
+  // Unbox into obj, preserving R0 for failure.
+  masm.unboxObject(R0, obj);
+
+  // Load expected shape from stub data (clobbers stubReg).
+  masm.loadPtr(Address(ICStubReg, shapeFieldOffset), scratch);
+
+  // Guard: shape matches.
+  masm.branchTestObjShapeNoSpectreMitigations(Assembler::NotEqual, obj, scratch,
+                                              failure);
+
+  masm.load32(Address(ICStubReg, slotFieldOffset), scratch);
+
+  // Load the property value from the object's fixed slot.
+  masm.loadValue(BaseIndex(obj, scratch, TimesOne), R0);
+
+  masm.jump(done);
+}
+
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineGetPropDynamicSlot(Label* failure,
+                                                            Label* done) {
+  // Inline fast path for GetProp with a fixed-slot property on a shaped
+  // NativeObject. R0 holds the input Value (the object). On success, the
+  // result is written to R0 and we jump to |done|. On failure we fall through
+  // to |failure|.
+  //
+  // Stub data layout (at stubReg + sizeof(ICCacheIRStub)):
+  //   [WeakShape @ offset 0]
+  //   [RawInt32 slot_offset @ sizeof(uintptr_t)]
+
+  static constexpr size_t stubDataStart = sizeof(ICCacheIRStub);
+  static constexpr size_t shapeFieldOffset = stubDataStart;
+  static constexpr size_t slotFieldOffset = stubDataStart + sizeof(uintptr_t);
+
+  // Register plan (must not clobber R0 before failure):
+  //   obj      = R1.scratchReg() = unboxed object
+  //   ICStubReg holds the first ICStub
+  Register scratch1 = R1.scratchReg();
+  Register scratch2 = R2.scratchReg();
+
+  // Guard: R0 is an object.
+  masm.branchTestObject(Assembler::NotEqual, R0, failure);
+
+  // Unbox into obj, preserving R0 for failure.
+  masm.unboxObject(R0, scratch1);
+
+  // Load expected shape from stub data (clobbers stubReg).
+  masm.loadPtr(Address(ICStubReg, shapeFieldOffset), scratch2);
+
+  // Guard: shape matches.
+  masm.branchTestObjShapeNoSpectreMitigations(Assembler::NotEqual, scratch1,
+                                              scratch2, failure);
+
+  masm.load32(Address(ICStubReg, slotFieldOffset), scratch2);
+
+  masm.loadPtr(Address(scratch1, NativeObject::offsetOfSlots()), scratch1);
+  masm.loadValue(BaseIndex(scratch1, scratch2, TimesOne), R0);
+
+  masm.jump(done);
+}
+
+// JumpIfFalse predicting GuardNonDoubleType(Boolean) + LoadOperandResult.
+// R0 holds the input value. If it's already a boolean, pass it through.
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineGuardBooleanResult(Label* failure,
+                                                            Label* done) {
+  masm.branchTestBoolean(Assembler::NotEqual, R0, failure);
+  masm.jump(done);
+}
+
+// InitProp predicting GuardToObject + GuardShape + StoreFixedSlot.
+// R0 = object value, R1 = value to store. No result produced.
+// Stub data: [WeakShape @ 0] [RawInt32 offset @ sizeof(uintptr_t)]
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineInitPropFixedSlot(Label* failure,
+                                                           Label* done) {
+  static constexpr size_t stubDataStart = sizeof(ICCacheIRStub);
+  static constexpr size_t shapeFieldOffset = stubDataStart;
+  static constexpr size_t slotFieldOffset = stubDataStart + sizeof(uintptr_t);
+
+  Register scratch = R2.scratchReg();
+
+  // Guard: R0 is an object.
+  masm.branchTestObject(Assembler::NotEqual, R0, failure);
+
+  // Unbox R0 into scratch. R0 (boxed value) is preserved for failure path.
+  masm.unboxObject(R0, scratch);
+
+  // Load obj->shape into scratch (clobbers the unboxed obj pointer).
+  static constexpr size_t shapeOffset = offsetof(JS::shadow::Object, shape);
+  masm.loadPtr(Address(scratch, shapeOffset), scratch);
+
+  // Guard: compare obj's shape (in scratch) with expected shape from stub.
+  masm.branchPtr(Assembler::NotEqual, Address(ICStubReg, shapeFieldOffset),
+                 scratch, failure);
+
+  // Shape matched. No more failure paths -- safe to clobber R0.
+  Register obj = scratch;
+  masm.unboxObject(R0, obj);
+
+  Register slotOff = R0.scratchReg();
+  masm.load32(Address(ICStubReg, slotFieldOffset), slotOff);
+
+  // Store the value (R1) at the object's fixed slot. No pre-barrier is
+  // needed because InitProp writes to a freshly allocated (undefined) slot.
+  masm.storeValue(R1, BaseIndex(obj, slotOff, TimesOne));
+
+  // Post-barrier: if the value is a nursery GC cell and the object is
+  // tenured, record it in the store buffer.
+  Label skipBarrier;
+  masm.branchValueIsNurseryCell(Assembler::NotEqual, R1, slotOff, &skipBarrier);
+  masm.branchPtrInNurseryChunk(Assembler::Equal, obj, slotOff, &skipBarrier);
+  MOZ_ASSERT(obj == R2.scratchReg(), "post barrier expects object in R2");
+  masm.call(&postBarrierSlot_);
+  masm.bind(&skipBarrier);
+
+  masm.jump(done);
+}
+
+// Lt/Ge predicting GuardToInt32 + GuardToInt32 + CompareInt32Result.
+// R0 = lhs, R1 = rhs. Result is a boolean in R0.
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineCompareInt32(Assembler::Condition cond,
+                                                      Label* failure,
+                                                      Label* done) {
+  masm.branchTestInt32(Assembler::NotEqual, R0, failure);
+  masm.branchTestInt32(Assembler::NotEqual, R1, failure);
+
+  // Both are int32. Unbox and compare. Safe to clobber R0/R1 since no more
+  // failure paths after this point.
+  Register lhs = R0.scratchReg();
+  Register rhs = R1.scratchReg();
+  masm.unboxInt32(R0, lhs);
+  masm.unboxInt32(R1, rhs);
+  masm.cmp32Set(cond, lhs, rhs, lhs);
+  masm.tagValue(JSVAL_TYPE_BOOLEAN, lhs, R0);
+
+  masm.jump(done);
+}
+
+// ToNumeric predicting GuardToInt32 + LoadInt32Result.
+// R0 holds the input value. If it's int32, pass it through unchanged.
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineGuardInt32Identity(Label* failure,
+                                                            Label* done) {
+  masm.branchTestInt32(Assembler::NotEqual, R0, failure);
+  masm.jump(done);
+}
+
+// GetIntrinsic predicting LoadValueResult.
+// No inputs. Load a Value from stub data into R0.
+// Stub data: [Value @ 0]
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineLoadValueResult(Label* done) {
+  static constexpr size_t stubDataStart = sizeof(ICCacheIRStub);
+  masm.loadValue(Address(ICStubReg, stubDataStart), R0);
+  masm.jump(done);
+}
+
+// Inc predicting GuardToInt32 + Int32IncResult.
+// R0 holds the input value. Unbox, increment, check overflow, box result.
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineIncInt32(Label* failure, Label* done) {
+  masm.branchTestInt32(Assembler::NotEqual, R0, failure);
+
+  Register scratch = R0.scratchReg();
+  masm.unboxInt32(R0, scratch);
+  masm.branchAdd32(Assembler::Overflow, Imm32(1), scratch, failure);
+  masm.tagValue(JSVAL_TYPE_INT32, scratch, R0);
+
+  masm.jump(done);
+}
+
+// BitAnd predicting GuardToInt32 + GuardToInt32 + Int32BitAndResult.
+// R0 = lhs, R1 = rhs. Result is an int32 in R0.
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineBitAndInt32(Label* failure,
+                                                     Label* done) {
+  masm.branchTestInt32(Assembler::NotEqual, R0, failure);
+  masm.branchTestInt32(Assembler::NotEqual, R1, failure);
+
+  Register lhs = R0.scratchReg();
+  Register rhs = R1.scratchReg();
+  masm.unboxInt32(R0, lhs);
+  masm.unboxInt32(R1, rhs);
+  masm.and32(rhs, lhs);
+  masm.tagValue(JSVAL_TYPE_INT32, lhs, R0);
+
+  masm.jump(done);
 }
 
 template <>

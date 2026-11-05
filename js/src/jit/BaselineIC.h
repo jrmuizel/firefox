@@ -8,7 +8,6 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 
-#include <stddef.h>
 #include <stdint.h>
 
 #include "jit/ICState.h"
@@ -134,6 +133,14 @@ class ICEntry {
 // Base class for all IC stubs.
 //
 class ICStub {
+ public:
+  enum class Flags : uint32_t {
+    TypeDataMask = 0xff,
+    IsFallback = 0x100,
+    SafeForInline = 0x200,
+  };
+
+ private:
   friend class ICFallbackStub;
 
  protected:
@@ -146,23 +153,21 @@ class ICStub {
   // becomes a concern.
   uint32_t enteredCount_ = 0;
 
-  // Tracks input types for some CacheIR stubs, to help optimize
-  // polymorphic cases. Stored in the base class to make use of
-  // padding bytes.
-  TypeData typeData_;
+  uint32_t flags_ = 0;
 
-  // Whether this is an ICFallbackStub or an ICCacheIRStub.
-  bool isFallback_;
-
-  ICStub(uint8_t* stubCode, bool isFallback)
-      : stubCode_(stubCode), isFallback_(isFallback) {
+  ICStub(uint8_t* stubCode, bool isFallback) : stubCode_(stubCode) {
 #ifndef ENABLE_PORTABLE_BASELINE_INTERP
     MOZ_ASSERT(stubCode != nullptr);
 #endif  // !ENABLE_PORTABLE_BASELINE_INTERP
+    if (isFallback) {
+      flags_ |= uint32_t(Flags::IsFallback);
+    }
   }
 
  public:
-  inline bool isFallback() const { return isFallback_; }
+  inline bool isFallback() const {
+    return (flags_ & uint32_t(Flags::IsFallback)) != 0;
+  }
 
   inline ICStub* maybeNext() const;
 
@@ -215,6 +220,15 @@ class ICStub {
   static constexpr size_t offsetOfEnteredCount() {
     return offsetof(ICStub, enteredCount_);
   }
+
+  bool safeForInline() const {
+    return (flags_ & uint32_t(Flags::SafeForInline)) != 0;
+  }
+
+  void setSafeForInline() { flags_ |= uint32_t(Flags::SafeForInline); }
+  void clearSafeForInline() { flags_ &= ~uint32_t(Flags::SafeForInline); }
+
+  static constexpr size_t offsetOfFlags() { return offsetof(ICStub, flags_); }
 };
 
 class ICFallbackStub final : public ICStub {
@@ -234,6 +248,11 @@ class ICFallbackStub final : public ICStub {
   inline size_t numOptimizedStubs() const { return state_.numOptimizedStubs(); }
 
   bool newStubIsFirstStub() const { return state_.newStubIsFirstStub(); }
+
+  bool canHaveInlineStub() const {
+    return state_.mode() == ICState::Mode::Specialized &&
+           numOptimizedStubs() <= 1;
+  }
 
   ICState& state() { return state_; }
 
@@ -310,8 +329,17 @@ class ICCacheIRStub final : public ICStub {
     return offsetof(ICCacheIRStub, next_);
   }
 
-  void setTypeData(TypeData data) { typeData_ = data; }
-  TypeData typeData() const { return typeData_; }
+  // Tracks input types for some CacheIR stubs, to help optimize
+  // polymorphic cases. Stored in the base class to make use of
+  // padding bytes.
+  TypeData typeData() const {
+    return TypeData(
+        JSValueType(uint8_t(flags_ & uint32_t(Flags::TypeDataMask))));
+  }
+
+  void setTypeData(TypeData data) {
+    flags_ = (flags_ & ~uint32_t(Flags::TypeDataMask)) | uint8_t(data.type());
+  }
 };
 
 // Assert stub size is what we expect to catch regressions.
