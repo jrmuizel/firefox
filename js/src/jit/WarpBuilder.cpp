@@ -415,6 +415,23 @@ MInstruction* WarpBuilder::buildCallObject(MDefinition* callee,
   return callObj;
 }
 
+MInstruction* WarpBuilder::guardCalleeEnvironment(MInstruction* envDef) {
+  MOZ_ASSERT(info().inlineScriptTree()->isOutermostCaller());
+  MInstruction* expected;
+  uint32_t nurseryIndex = scriptSnapshot()->calleeEnvNurseryIndex();
+  if (nurseryIndex != UINT32_MAX) {
+    expected = MNurseryObject::New(alloc(), nurseryIndex);
+    current->add(expected);
+  } else {
+    expected = constant(ObjectValue(*scriptSnapshot()->calleeEnv()));
+  }
+  auto* guard = MGuardObjectIdentity::New(alloc(), envDef, expected,
+                                          /* bailOnEquality = */ false);
+  guard->setBailoutKind(BailoutKind::EnvironmentGuard);
+  current->add(guard);
+  return guard;
+}
+
 bool WarpBuilder::buildEnvironmentChain() {
   const WarpEnvironment& env = scriptSnapshot()->environment();
 
@@ -433,6 +450,9 @@ bool WarpBuilder::buildEnvironmentChain() {
         MDefinition* callee = getCallee();
         MInstruction* envDef = MFunctionEnvironment::New(alloc(), callee);
         current->add(envDef);
+        if (scriptSnapshot()->hasCalleeEnvGuard()) {
+          envDef = guardCalleeEnvironment(envDef);
+        }
         if (NamedLambdaObject* obj = env.namedLambdaTemplate) {
           envDef = buildNamedLambdaEnv(callee, envDef, obj, env.initialHeap);
         }

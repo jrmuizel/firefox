@@ -282,6 +282,9 @@ void WarpSnapshot::trace(JSTracer* trc) {
 
 void WarpScriptSnapshot::trace(JSTracer* trc) {
   TraceOffthreadGCPtr(trc, script_, "warp-script");
+  if (calleeEnv_) {
+    TraceOffthreadGCPtr(trc, calleeEnv_, "warp-callee-env");
+  }
 
   environment_.match([](const NoEnvironment&) {},
                      [trc](OffthreadGCPtr<JSObject*>& obj) {

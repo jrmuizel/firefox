@@ -57,6 +57,10 @@ class MOZ_STACK_CLASS WarpScriptOracle {
   // The callee function, if this script is inlined and the call site guards on
   // a specific function.
   HandleFunction knownCallee_;
+  // Whether the callee is only known speculatively, so uses of its environment
+  // must be guarded.
+  bool guardKnownCallee_ = false;
+  bool usedKnownCalleeEnv_ = false;
   Vector<uint32_t, 16, SystemAllocPolicy> monomorphicInlineHints_;
   bool monomorphicInlineHintsComputed_ = false;
 
@@ -108,16 +112,19 @@ class MOZ_STACK_CLASS WarpScriptOracle {
 
   AbortReasonOr<WarpScriptSnapshot*> createScriptSnapshot();
 
+  void setGuardKnownCallee() { guardKnownCallee_ = true; }
+
   ICEntry& getICEntryAndFallback(BytecodeLocation loc,
                                  ICFallbackStub** fallback);
 };
 
 WarpOracle::WarpOracle(JSContext* cx, MIRGenerator& mirGen,
-                       HandleScript outerScript)
+                       HandleScript outerScript, HandleFunction outerCallee)
     : cx_(cx),
       mirGen_(mirGen),
       alloc_(mirGen.alloc()),
-      outerScript_(outerScript) {}
+      outerScript_(outerScript),
+      outerCallee_(outerCallee) {}
 
 mozilla::GenericErrorResult<AbortReason> WarpOracle::abort(HandleScript script,
                                                            AbortReason r) {
@@ -170,7 +177,8 @@ AbortReasonOr<WarpSnapshot*> WarpOracle::createSnapshot() {
   MOZ_ASSERT(outerScript_->hasJitScript());
   ICScript* icScript = outerScript_->jitScript()->icScript();
   WarpScriptOracle scriptOracle(cx_, this, outerScript_, &mirGen_.outerInfo(),
-                                icScript);
+                                icScript, outerCallee_);
+  scriptOracle.setGuardKnownCallee();
 
   WarpScriptSnapshot* scriptSnapshot =
       MOZ_TRY(scriptOracle.createScriptSnapshot());
@@ -782,6 +790,18 @@ AbortReasonOr<WarpScriptSnapshot*> WarpScriptOracle::createScriptSnapshot() {
       script_, environment, std::move(opSnapshots), moduleObject);
   if (!scriptSnapshot) {
     return abort(AbortReason::Alloc);
+  }
+
+  if (guardKnownCallee_ && usedKnownCalleeEnv_) {
+    JSObject* env = knownCallee_->environment();
+    uint32_t nurseryIndex = UINT32_MAX;
+    if (IsInsideNursery(env)) {
+      if (!oracle_->registerNurseryObject(env, &nurseryIndex)) {
+        return abort(AbortReason::Alloc);
+      }
+      env = nullptr;
+    }
+    scriptSnapshot->setCalleeEnvGuard(env, nurseryIndex);
   }
 
   autoClearOpSnapshots.release();
@@ -1672,6 +1692,7 @@ bool WarpScriptOracle::maybeSnapshotAliasedVar(WarpOpSnapshotList& snapshots,
     tenuredValue = value;
   }
 
+  usedKnownCalleeEnv_ = true;
   return AddOpSnapshot<WarpAliasedVar>(
       alloc_, snapshots, loc.bytecodeToOffset(script_), tenuredEnv,
       envNurseryIndex, nenv->numFixedSlots(), slot, hasConstantValue,

@@ -2118,6 +2118,13 @@ bool jit::FinishBailoutToBaseline(BaselineBailoutInfo* bailoutInfoArg) {
       InvalidateAfterBailout(cx, outerScript, "unbox folding failure");
       break;
 
+    case BailoutKind::EnvironmentGuard:
+      // The callee's environment didn't match the one we specialized on.
+      MOZ_ASSERT(!outerScript->failedEnvironmentGuard());
+      outerScript->setFailedEnvironmentGuard();
+      InvalidateAfterBailout(cx, outerScript, "environment guard failure");
+      break;
+
     case BailoutKind::TooManyArguments:
       // A funapply or spread call had more than JIT_ARGS_LENGTH_MAX arguments.
       // We will invalidate and disable recompilation if this happens too often.

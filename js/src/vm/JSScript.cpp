@@ -3670,6 +3670,9 @@ static void DumpMutableScriptFlags(js::JSONPrinter& json,
         case MutableScriptFlagsEnum::HadUnboxFoldingBailout:
           json.value("HadUnboxFoldingBailout");
           break;
+        case MutableScriptFlagsEnum::FailedEnvironmentGuard:
+          json.value("FailedEnvironmentGuard");
+          break;
         default:
           json.value("Unknown(%x)", i);
           break;

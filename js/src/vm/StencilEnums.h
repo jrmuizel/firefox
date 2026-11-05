@@ -276,7 +276,9 @@ enum class MutableScriptFlagsEnum : uint32_t {
   // Script has an entry in Realm::debugScriptMap.
   HasDebugScript = 1 << 11,
 
-  // (1 << 12) is unused.
+  // A guard on the callee's environment in Warp code bailed out.
+  FailedEnvironmentGuard = 1 << 12,
+
   // (1 << 13) is unused.
 
   // Script supports relazification where it releases bytecode and gcthings to

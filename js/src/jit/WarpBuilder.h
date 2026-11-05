@@ -281,6 +281,7 @@ class MOZ_STACK_CLASS WarpBuilder : public WarpBuilderShared {
                                            CacheKind kind);
 
   [[nodiscard]] bool buildEnvironmentChain();
+  MInstruction* guardCalleeEnvironment(MInstruction* envDef);
   MInstruction* buildNamedLambdaEnv(MDefinition* callee, MDefinition* env,
                                     NamedLambdaObject* templateObj,
                                     gc::Heap initialHeap);

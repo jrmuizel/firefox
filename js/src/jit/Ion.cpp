@@ -1767,13 +1767,14 @@ CodeGenerator* CompileBackEnd(MIRGenerator* mir, WarpSnapshot* snapshot) {
 
 static AbortReasonOr<WarpSnapshot*> CreateWarpSnapshot(JSContext* cx,
                                                        MIRGenerator* mirGen,
-                                                       HandleScript script) {
+                                                       HandleScript script,
+                                                       HandleFunction callee) {
   // Suppress GC during compilation.
   gc::AutoSuppressGC suppressGC(cx);
 
   mirGen->spewBeginFunction(script);
 
-  WarpOracle oracle(cx, *mirGen, script);
+  WarpOracle oracle(cx, *mirGen, script, callee);
 
   AbortReasonOr<WarpSnapshot*> result = oracle.createSnapshot();
 
@@ -1820,7 +1821,7 @@ UniquePtr<LifoAlloc> JitRuntime::tryReuseIonLifoAlloc() {
 }
 
 static AbortReason IonCompile(JSContext* cx, HandleScript script,
-                              jsbytecode* osrPc) {
+                              jsbytecode* osrPc, HandleFunction callee) {
   cx->check(script);
 
   if (!cx->zone()->ensureJitZoneExists(cx)) {
@@ -1882,7 +1883,8 @@ static AbortReason IonCompile(JSContext* cx, HandleScript script,
     script->jitScript()->setHadIonOSR();
   }
 
-  AbortReasonOr<WarpSnapshot*> result = CreateWarpSnapshot(cx, mirGen, script);
+  AbortReasonOr<WarpSnapshot*> result =
+      CreateWarpSnapshot(cx, mirGen, script, callee);
   if (result.isErr()) {
     return result.unwrapErr();
   }
@@ -2034,6 +2036,26 @@ bool CanIonCompileScript(JSContext* cx, JSScript* script) {
   return true;
 }
 
+// Returns true if the callee's environment is likely the only one this script
+// will be called with. Closures created by a function that runs many times
+// usually have a different environment for each call.
+static bool CalleeEnvironmentLikelyUnique(JSScript* script) {
+  static constexpr uint32_t MaxEnclosingWarmUpCount = 10;
+  for (Scope* scope = script->enclosingScope(); scope;
+       scope = scope->enclosing()) {
+    if (scope->is<FunctionScope>()) {
+      BaseScript* enclosing =
+          scope->as<FunctionScope>().canonicalFunction()->baseScript();
+      if (!enclosing->hasBytecode()) {
+        return true;
+      }
+      return enclosing->asJSScript()->getWarmUpCount() <=
+             MaxEnclosingWarmUpCount;
+    }
+  }
+  return true;
+}
+
 static MethodStatus Compile(JSContext* cx, HandleScript script,
                             BaselineFrame* osrFrame, jsbytecode* osrPc) {
   MOZ_ASSERT(jit::IsIonEnabled(cx));
@@ -2074,7 +2096,17 @@ static MethodStatus Compile(JSContext* cx, HandleScript script,
 
   MOZ_ASSERT(!script->hasIonScript());
 
-  AbortReason reason = IonCompile(cx, script, osrPc);
+  // When compiling at function entry, specialize the script on the
+  // environment of the current callee. This is guarded at runtime.
+  Rooted<JSFunction*> callee(cx);
+  if (osrFrame && !osrPc && osrFrame->isFunctionFrame() &&
+      !script->failedEnvironmentGuard() && !script->isGenerator() &&
+      !script->isAsync() && CalleeEnvironmentLikelyUnique(script)) {
+    callee = osrFrame->callee();
+    MOZ_ASSERT(callee->nonLazyScript() == script);
+  }
+
+  AbortReason reason = IonCompile(cx, script, osrPc, callee);
   if (reason == AbortReason::Error) {
     MOZ_ASSERT(cx->isExceptionPending());
     return Method_Error;

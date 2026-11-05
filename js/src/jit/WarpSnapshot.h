@@ -649,6 +649,13 @@ class WarpScriptSnapshot
   // If the script has a JSOp::ImportMeta op, this is the module to bake in.
   OffthreadGCPtr<ModuleObject*> moduleObject_;
 
+  // If set, WarpBuilder guards that the callee's environment is this object
+  // (or the nursery object at calleeEnvNurseryIndex_). Only used for the
+  // outermost script.
+  OffthreadGCPtr<JSObject*> calleeEnv_;
+  uint32_t calleeEnvNurseryIndex_ = UINT32_MAX;
+  bool hasCalleeEnvGuard_ = false;
+
   // Whether this script is for an arrow function.
   bool isArrowFunction_;
 
@@ -663,6 +670,18 @@ class WarpScriptSnapshot
   ModuleObject* moduleObject() const { return moduleObject_; }
 
   bool isArrowFunction() const { return isArrowFunction_; }
+
+  void setCalleeEnvGuard(JSObject* tenuredEnv, uint32_t nurseryIndex) {
+    MOZ_ASSERT(!hasCalleeEnvGuard_);
+    if (tenuredEnv) {
+      calleeEnv_.init(tenuredEnv);
+    }
+    calleeEnvNurseryIndex_ = nurseryIndex;
+    hasCalleeEnvGuard_ = true;
+  }
+  bool hasCalleeEnvGuard() const { return hasCalleeEnvGuard_; }
+  JSObject* calleeEnv() const { return calleeEnv_; }
+  uint32_t calleeEnvNurseryIndex() const { return calleeEnvNurseryIndex_; }
 
   void trace(JSTracer* trc);
 

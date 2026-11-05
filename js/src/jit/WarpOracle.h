@@ -30,6 +30,10 @@ class MOZ_STACK_CLASS WarpOracle {
   MIRGenerator& mirGen_;
   TempAllocator& alloc_;
   HandleScript outerScript_;
+
+  // The callee of the frame that triggered this compilation, if we want to
+  // specialize the outer script on its environment.
+  HandleFunction outerCallee_;
   WarpBailoutInfo bailoutInfo_;
   WarpScriptSnapshotList scriptSnapshots_;
   WarpZoneStubsSnapshot zoneStubs_{};
@@ -55,7 +59,8 @@ class MOZ_STACK_CLASS WarpOracle {
   NurseryValuesMap nurseryValuesMap_;
 
  public:
-  WarpOracle(JSContext* cx, MIRGenerator& mirGen, HandleScript outerScript);
+  WarpOracle(JSContext* cx, MIRGenerator& mirGen, HandleScript outerScript,
+             HandleFunction outerCallee);
   ~WarpOracle() { scriptSnapshots_.clear(); }
 
   MIRGenerator& mirGen() { return mirGen_; }

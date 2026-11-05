@@ -101,3 +101,28 @@ function testNonAtomString() {
   }
 }
 testNonAtomString();
+// The outer script is specialized on its callee's environment. Calling it with
+// a different closure must fail the guard and still produce correct results.
+function makeCounter(n) {
+  const N = n;
+  let v = 0;
+  return function (x) {
+    v++;
+    return N + x + v;
+  };
+}
+function testOuterGuard() {
+  const a = makeCounter(1);
+  const b = makeCounter(100);
+  for (let i = 0; i < 200; i++) {
+    assertEq(a(i), 1 + i + (i + 1));
+  }
+  for (let i = 0; i < 200; i++) {
+    assertEq(b(i), 100 + i + (i + 1));
+  }
+  for (let i = 0; i < 200; i++) {
+    assertEq(a(0), 1 + 201 + i);
+    assertEq(b(0), 100 + 201 + i);
+  }
+}
+testOuterGuard();

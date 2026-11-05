@@ -360,7 +360,8 @@ class MutableScriptFlags : public EnumFlags<MutableScriptFlagsEnum> {
   _(MutableFlags, uninlineable, Uninlineable)                           \
   _(MutableFlags, noEagerBaselineHint, NoEagerBaselineHint)             \
   _(MutableFlags, failedLexicalCheck, FailedLexicalCheck)               \
-  _(MutableFlags, hadSpeculativePhiBailout, HadSpeculativePhiBailout)
+  _(MutableFlags, hadSpeculativePhiBailout, HadSpeculativePhiBailout)   \
+  _(MutableFlags, failedEnvironmentGuard, FailedEnvironmentGuard)
 
 #define RW_MUTABLE_SCRIPT_FLAGS(Field)          \
   using MutableFlags = MutableScriptFlagsEnum;  \
