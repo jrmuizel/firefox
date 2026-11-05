@@ -2092,6 +2092,30 @@ MDefinition* WarpBuilder::walkEnvironmentChain(uint32_t numHops) {
 }
 
 bool WarpBuilder::build_GetAliasedVar(BytecodeLocation loc) {
+  if (auto* snapshot = getOpSnapshot<WarpAliasedVar>(loc)) {
+    if (snapshot->hasConstantValue()) {
+      if (snapshot->valueNurseryIndex() != WarpAliasedVar::NoNurseryIndex) {
+        auto* obj = MNurseryObject::New(alloc(), snapshot->valueNurseryIndex());
+        current->add(obj);
+        current->push(obj);
+      } else {
+        pushConstant(snapshot->constantValue());
+      }
+      return true;
+    }
+    MDefinition* env;
+    if (snapshot->envNurseryIndex() != WarpAliasedVar::NoNurseryIndex) {
+      auto* obj = MNurseryObject::New(alloc(), snapshot->envNurseryIndex());
+      current->add(obj);
+      env = obj;
+    } else {
+      env = constant(ObjectValue(*snapshot->env()));
+    }
+    current->push(
+        buildLoadSlot(env, snapshot->numFixedSlots(), snapshot->slot()));
+    return true;
+  }
+
   EnvironmentCoordinate ec = loc.getEnvironmentCoordinate();
   MDefinition* obj = walkEnvironmentChain(ec.hops());
   if (!obj) {
@@ -3013,7 +3037,13 @@ void WarpBuilder::buildCheckLexicalOp(BytecodeLocation loc) {
   JSOp op = loc.getOp();
   MOZ_ASSERT(op == JSOp::CheckLexical || op == JSOp::CheckAliasedLexical);
 
-  MDefinition* input = current->pop();
+  MDefinition* input = current->peek(-1);
+  if (input->isConstant() &&
+      input->type() != MIRType::MagicUninitializedLexical) {
+    input->setImplicitlyUsedUnchecked();
+    return;
+  }
+  current->pop();
   MInstruction* lexicalCheck = MLexicalCheck::New(alloc(), input);
   current->add(lexicalCheck);
   current->push(lexicalCheck);

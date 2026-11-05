@@ -234,6 +234,7 @@ Maybe<InlinableCallData> FindInlinableCallData(ICCacheIRStub* stub) {
   ObjOperandId calleeGuardOperand;
   CallFlags flags;
   JSScript* targetScript = nullptr;
+  JSFunction* targetFunction = nullptr;
 
   CacheIRReader reader(stubInfo);
   while (reader.more()) {
@@ -257,6 +258,7 @@ Maybe<InlinableCallData> FindInlinableCallData(ICCacheIRStub* stub) {
         if (function->hasBytecode()) {
           calleeGuardOperand = args.funId;
           targetScript = function->nonLazyScript();
+          targetFunction = function;
         }
         break;
       }
@@ -360,6 +362,9 @@ Maybe<InlinableCallData> FindInlinableCallData(ICCacheIRStub* stub) {
     }
     data->callFlags = flags;
     data->target = targetScript;
+    if (!data->isBound) {
+      data->targetFunction = targetFunction;
+    }
   }
   return data;
 }

@@ -165,6 +165,14 @@ void WarpGetImport::dumpData(GenericPrinter& out) const {
   out.printf("    needsLexicalCheck: %u\n", needsLexicalCheck());
 }
 
+void WarpAliasedVar::dumpData(GenericPrinter& out) const {
+  out.printf("    env: 0x%p\n", env());
+  out.printf("    envNurseryIndex: %u\n", envNurseryIndex());
+  out.printf("    numFixedSlots: %u\n", numFixedSlots());
+  out.printf("    slot: %u\n", slot());
+  out.printf("    hasConstantValue: %u\n", hasConstantValue());
+}
+
 void WarpRest::dumpData(GenericPrinter& out) const {
   out.printf("    shape: 0x%p\n", shape());
 }
@@ -331,6 +339,11 @@ void WarpGetIntrinsic::traceData(JSTracer* trc) {
 
 void WarpGetImport::traceData(JSTracer* trc) {
   TraceOffthreadGCPtr(trc, targetEnv_, "warp-import-env");
+}
+
+void WarpAliasedVar::traceData(JSTracer* trc) {
+  TraceOffthreadGCPtr(trc, env_, "warp-aliasedvar-env");
+  TraceOffthreadGCPtr(trc, constantValue_, "warp-aliasedvar-value");
 }
 
 void WarpRest::traceData(JSTracer* trc) {

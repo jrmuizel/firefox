@@ -38,6 +38,7 @@ class WarpScriptSnapshot;
   _(WarpBuiltinObject)                  \
   _(WarpGetIntrinsic)                   \
   _(WarpGetImport)                      \
+  _(WarpAliasedVar)                     \
   _(WarpRest)                           \
   _(WarpBindUnqualifiedGName)           \
   _(WarpVarEnvironment)                 \
@@ -197,6 +198,52 @@ class WarpGetImport : public WarpOpSnapshot {
   uint32_t numFixedSlots() const { return numFixedSlots_; }
   uint32_t slot() const { return slot_; }
   bool needsLexicalCheck() const { return needsLexicalCheck_; }
+
+  void traceData(JSTracer* trc);
+
+#ifdef JS_JITSPEW
+  void dumpData(GenericPrinter& out) const;
+#endif
+};
+
+// Target environment and slot for JSOp::GetAliasedVar in a script inlined with
+// a known callee function. If the binding is an initialized const binding, its
+// value is stored as well. Nursery objects are stored as an index into the
+// snapshot's nursery objects.
+class WarpAliasedVar : public WarpOpSnapshot {
+ public:
+  static constexpr uint32_t NoNurseryIndex = UINT32_MAX;
+
+ private:
+  OffthreadGCPtr<NativeObject*> env_;
+  OffthreadGCPtr<Value> constantValue_;
+  uint32_t envNurseryIndex_;
+  uint32_t valueNurseryIndex_;
+  uint32_t numFixedSlots_;
+  uint32_t slot_;
+  bool hasConstantValue_;
+
+ public:
+  static constexpr Kind ThisKind = Kind::WarpAliasedVar;
+
+  WarpAliasedVar(uint32_t offset, NativeObject* env, uint32_t envNurseryIndex,
+                 uint32_t numFixedSlots, uint32_t slot, bool hasConstantValue,
+                 const Value& constantValue, uint32_t valueNurseryIndex)
+      : WarpOpSnapshot(ThisKind, offset),
+        env_(env),
+        constantValue_(constantValue),
+        envNurseryIndex_(envNurseryIndex),
+        valueNurseryIndex_(valueNurseryIndex),
+        numFixedSlots_(numFixedSlots),
+        slot_(slot),
+        hasConstantValue_(hasConstantValue) {}
+  NativeObject* env() const { return env_; }
+  uint32_t envNurseryIndex() const { return envNurseryIndex_; }
+  uint32_t numFixedSlots() const { return numFixedSlots_; }
+  uint32_t slot() const { return slot_; }
+  bool hasConstantValue() const { return hasConstantValue_; }
+  Value constantValue() const { return constantValue_; }
+  uint32_t valueNurseryIndex() const { return valueNurseryIndex_; }
 
   void traceData(JSTracer* trc);
 

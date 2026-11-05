@@ -54,6 +54,9 @@ class MOZ_STACK_CLASS WarpScriptOracle {
   HandleScript script_;
   const CompileInfo* info_;
   ICScript* icScript_;
+  // The callee function, if this script is inlined and the call site guards on
+  // a specific function.
+  HandleFunction knownCallee_;
   Vector<uint32_t, 16, SystemAllocPolicy> monomorphicInlineHints_;
   bool monomorphicInlineHintsComputed_ = false;
 
@@ -70,6 +73,8 @@ class MOZ_STACK_CLASS WarpScriptOracle {
   AbortReasonOr<Ok> maybeInlineIC(WarpOpSnapshotList& snapshots,
                                   BytecodeLocation loc);
   AbortReasonOr<Ok> ensureMonomorphicInlineHints();
+  [[nodiscard]] bool maybeSnapshotAliasedVar(WarpOpSnapshotList& snapshots,
+                                             BytecodeLocation loc);
   AbortReasonOr<bool> maybeInlineCall(WarpOpSnapshotList& snapshots,
                                       BytecodeLocation loc, ICCacheIRStub* stub,
                                       ICFallbackStub* fallbackStub,
@@ -90,14 +95,16 @@ class MOZ_STACK_CLASS WarpScriptOracle {
 
  public:
   WarpScriptOracle(JSContext* cx, WarpOracle* oracle, HandleScript script,
-                   const CompileInfo* info, ICScript* icScript)
+                   const CompileInfo* info, ICScript* icScript,
+                   HandleFunction knownCallee = nullptr)
       : cx_(cx),
         oracle_(oracle),
         mirGen_(oracle->mirGen()),
         alloc_(mirGen_.alloc()),
         script_(script),
         info_(info),
-        icScript_(icScript) {}
+        icScript_(icScript),
+        knownCallee_(knownCallee) {}
 
   AbortReasonOr<WarpScriptSnapshot*> createScriptSnapshot();
 
@@ -422,6 +429,12 @@ AbortReasonOr<WarpScriptSnapshot*> WarpScriptOracle::createScriptSnapshot() {
         break;
       }
 
+      case JSOp::GetAliasedVar:
+        if (!maybeSnapshotAliasedVar(opSnapshots, loc)) {
+          return abort(AbortReason::Alloc);
+        }
+        break;
+
       case JSOp::GetImport: {
         PropertyName* name = loc.getPropertyName(script_);
         if (!AddWarpGetImport(alloc_, opSnapshots, offset, script_, name)) {
@@ -676,7 +689,6 @@ AbortReasonOr<WarpScriptSnapshot*> WarpScriptOracle::createScriptSnapshot() {
       case JSOp::Callee:
       case JSOp::ToAsyncIter:
       case JSOp::ObjWithProto:
-      case JSOp::GetAliasedVar:
       case JSOp::SetAliasedVar:
       case JSOp::InitAliasedLexical:
       case JSOp::EnvCallee:
@@ -1487,7 +1499,9 @@ AbortReasonOr<bool> WarpScriptOracle::maybeInlineCall(
 
   // Take a snapshot of the inlined script (which may do more
   // inlining recursively).
-  WarpScriptOracle scriptOracle(cx_, oracle_, targetScript, info, icScript);
+  Rooted<JSFunction*> knownCallee(cx_, inlineData->targetFunction);
+  WarpScriptOracle scriptOracle(cx_, oracle_, targetScript, info, icScript,
+                                knownCallee);
 
   AbortReasonOr<WarpScriptSnapshot*> maybeScriptSnapshot =
       scriptOracle.createScriptSnapshot();
@@ -1551,6 +1565,117 @@ AbortReasonOr<bool> WarpScriptOracle::maybeInlineCall(
   }
 
   return true;
+}
+
+// If this script was inlined with a known callee, the environment chain outside
+// of the callee is known at compile time. Find the environment object for
+// JSOp::GetAliasedVar if it's outside the callee, and fold the value if the
+// binding is an initialized const binding.
+bool WarpScriptOracle::maybeSnapshotAliasedVar(WarpOpSnapshotList& snapshots,
+                                               BytecodeLocation loc) {
+  if (!knownCallee_) {
+    return true;
+  }
+  MOZ_ASSERT(knownCallee_->nonLazyScript() == script_);
+
+  // The named lambda environment is created when the function is called.
+  if (knownCallee_->needsNamedLambdaEnvironment()) {
+    return true;
+  }
+
+  EnvironmentCoordinate ec = loc.getEnvironmentCoordinate();
+  Scope* outerScope = script_->enclosingScope();
+
+  // Find the scope for this coordinate and the number of hops outside the
+  // callee's own environments.
+  uint32_t hops = ec.hops();
+  uint32_t outerHops = 0;
+  bool outside = false;
+  Scope* targetScope = nullptr;
+  for (Scope* scope = script_->innermostScope(loc.toRawBytecode()); scope;
+       scope = scope->enclosing()) {
+    if (scope == outerScope) {
+      outside = true;
+    }
+    if (!scope->hasEnvironment()) {
+      continue;
+    }
+    if (hops == 0) {
+      targetScope = scope;
+      break;
+    }
+    hops--;
+    if (outside) {
+      outerHops++;
+    }
+  }
+  if (!targetScope || !outside) {
+    return true;
+  }
+
+  SharedShape* expectedShape = targetScope->environmentShape();
+  if (!expectedShape) {
+    return true;
+  }
+
+  JSObject* env = knownCallee_->environment();
+  for (uint32_t i = 0; i < outerHops; i++) {
+    if (!env->is<EnvironmentObject>()) {
+      return true;
+    }
+    env = &env->as<EnvironmentObject>().enclosingEnvironment();
+  }
+  if (env->shape() != expectedShape) {
+    return true;
+  }
+
+  NativeObject* nenv = &env->as<NativeObject>();
+  uint32_t slot = ec.slot();
+  MOZ_ASSERT(slot < nenv->slotSpan());
+
+  bool isConst = false;
+  for (ShapePropertyIter<NoGC> iter(nenv->shape()); !iter.done(); iter++) {
+    if (iter->hasSlot() && iter->slot() == slot) {
+      isConst = !iter->writable();
+      break;
+    }
+  }
+
+  Value value = nenv->getSlot(slot);
+  // MConstant requires strings to be atoms.
+  bool hasConstantValue = isConst && !value.isMagic() &&
+                          (!value.isString() || value.toString()->isAtom());
+  uint32_t valueNurseryIndex = WarpAliasedVar::NoNurseryIndex;
+  if (hasConstantValue && value.isGCThing() &&
+      IsInsideNursery(value.toGCThing())) {
+    if (value.isObject()) {
+      if (!oracle_->registerNurseryObject(&value.toObject(),
+                                          &valueNurseryIndex)) {
+        return false;
+      }
+    } else {
+      hasConstantValue = false;
+    }
+  }
+
+  uint32_t envNurseryIndex = WarpAliasedVar::NoNurseryIndex;
+  NativeObject* tenuredEnv = nenv;
+  if (IsInsideNursery(nenv)) {
+    if (!oracle_->registerNurseryObject(nenv, &envNurseryIndex)) {
+      return false;
+    }
+    tenuredEnv = nullptr;
+  }
+
+  Value tenuredValue = UndefinedValue();
+  if (hasConstantValue && valueNurseryIndex == WarpAliasedVar::NoNurseryIndex) {
+    tenuredValue = value;
+  }
+
+  return AddOpSnapshot<WarpAliasedVar>(
+      alloc_, snapshots, loc.bytecodeToOffset(script_), tenuredEnv,
+      envNurseryIndex, nenv->numFixedSlots(), slot, hasConstantValue,
+      tenuredValue, valueNurseryIndex);
 }
 
 bool WarpOracle::snapshotJitZoneStub(JitZone::StubKind kind) {
