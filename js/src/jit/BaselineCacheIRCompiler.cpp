@@ -2355,6 +2355,9 @@ ICAttachResult js::jit::AttachBaselineCacheIRStubLocked(
     InlineICRecipe recipe = InlineRecipeForOp(op, stubInfo);
     if (recipe != InlineICRecipe::None) {
       newStub->setSafeForInline();
+      if (recipe == InlineICRecipe::GetProp_DynamicSlot) {
+        newStub->setInlineDynamicSlot();
+      }
     }
   } else {
     newStub->clearSafeForInline();

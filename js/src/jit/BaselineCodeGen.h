@@ -207,6 +207,7 @@ class BaselineCodeGen {
   [[nodiscard]] bool emitGetAliasedDebugVar(ValueOperand dest);
 
   [[nodiscard]] bool emitNextIC();
+  void emitInlineGetPropSlot(Label* failure, Label* done);
   void emitInlineGetPropFixedSlot(Label* failure, Label* done);
   void emitInlineGetPropDynamicSlot(Label* failure, Label* done);
   void emitInlineGuardBooleanResult(Label* failure, Label* done);

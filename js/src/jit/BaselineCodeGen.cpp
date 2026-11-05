@@ -809,15 +809,15 @@ bool BaselineCompilerCodeGen::emitNextIC() {
   InlineICRecipe inlineRecipe = InlineICRecipe::None;
   if (!JitOptions.disableBaselineInlineIC) {
     if (handler.compilingOffThread()) {
-      inlineRecipe = InlineRecipeForOp(op, nullptr);
+      inlineRecipe = InlineRecipeForCodegen(op, nullptr);
     } else if (stub->canHaveInlineStub() && stub->numOptimizedStubs() == 0) {
-      inlineRecipe = InlineRecipeForOp(op, nullptr);
+      inlineRecipe = InlineRecipeForCodegen(op, nullptr);
     } else if (stub->canHaveInlineStub()) {
       MOZ_ASSERT(stub->numOptimizedStubs() == 1);
       ICEntry* icEntry = &script->jitScript()->icEntry(entryIndex);
       const CacheIRStubInfo* stubInfo =
           icEntry->firstStub()->toCacheIRStub()->stubInfo();
-      inlineRecipe = InlineRecipeForOp(op, stubInfo);
+      inlineRecipe = InlineRecipeForCodegen(op, stubInfo);
     }
   }
 
@@ -840,6 +840,9 @@ bool BaselineCompilerCodeGen::emitNextIC() {
         break;
       case InlineICRecipe::GetProp_DynamicSlot:
         emitInlineGetPropDynamicSlot(&failure, &done);
+        break;
+      case InlineICRecipe::GetProp_Slot:
+        emitInlineGetPropSlot(&failure, &done);
         break;
       case InlineICRecipe::JumpIfFalse_Boolean:
         emitInlineGuardBooleanResult(&failure, &done);
@@ -910,6 +913,38 @@ bool BaselineInterpreterCodeGen::emitNextIC() {
   }
 
   return true;
+}
+
+template <typename Handler>
+void BaselineCodeGen<Handler>::emitInlineGetPropSlot(Label* failure,
+                                                     Label* done) {
+  // Like emitInlineGetPropFixedSlot/emitInlineGetPropDynamicSlot, but handles
+  // both stub kinds by testing the stub's InlineDynamicSlot flag.
+  static constexpr size_t stubDataStart = sizeof(ICCacheIRStub);
+  static constexpr size_t shapeFieldOffset = stubDataStart;
+  static constexpr size_t slotFieldOffset = stubDataStart + sizeof(uintptr_t);
+
+  Register obj = R1.scratchReg();
+  Register scratch = R2.scratchReg();
+
+  masm.branchTestObject(Assembler::NotEqual, R0, failure);
+  masm.unboxObject(R0, obj);
+  masm.loadPtr(Address(ICStubReg, shapeFieldOffset), scratch);
+  masm.branchTestObjShapeNoSpectreMitigations(Assembler::NotEqual, obj, scratch,
+                                              failure);
+  masm.load32(Address(ICStubReg, slotFieldOffset), scratch);
+
+  Label dynamicSlot;
+  masm.branchTest32(
+      Assembler::NonZero, Address(ICStubReg, ICStub::offsetOfFlags()),
+      Imm32(uint32_t(ICStub::Flags::InlineDynamicSlot)), &dynamicSlot);
+  masm.loadValue(BaseIndex(obj, scratch, TimesOne), R0);
+  masm.jump(done);
+
+  masm.bind(&dynamicSlot);
+  masm.loadPtr(Address(obj, NativeObject::offsetOfSlots()), obj);
+  masm.loadValue(BaseIndex(obj, scratch, TimesOne), R0);
+  masm.jump(done);
 }
 
 template <typename Handler>

@@ -312,3 +312,14 @@ InlineICRecipe js::jit::InlineRecipeForOp(JSOp op,
   }
   return InlineICRecipe::None;
 }
+
+InlineICRecipe js::jit::InlineRecipeForCodegen(
+    JSOp op, const CacheIRStubInfo* stubInfo) {
+  if (op == JSOp::GetProp) {
+    if (!stubInfo || InlineRecipeForOp(op, stubInfo) != InlineICRecipe::None) {
+      return InlineICRecipe::GetProp_Slot;
+    }
+    return InlineICRecipe::None;
+  }
+  return InlineRecipeForOp(op, stubInfo);
+}

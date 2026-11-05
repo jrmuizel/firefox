@@ -19,6 +19,9 @@ enum class InlineICRecipe : uint8_t {
   None,
   GetProp_FixedSlot,
   GetProp_DynamicSlot,
+  // Handles both fixed and dynamic slot GetProp stubs, using the stub's
+  // InlineDynamicSlot flag. Used when compiling without knowing the stub.
+  GetProp_Slot,
   JumpIfFalse_Boolean,
   InitProp_FixedSlot,
   Compare_Int32_Lt,
@@ -30,6 +33,10 @@ enum class InlineICRecipe : uint8_t {
 };
 
 InlineICRecipe InlineRecipeForOp(JSOp op, const CacheIRStubInfo* stubInfo);
+
+// The recipe Baseline code emits for |op| given the stub info known at compile
+// time (or nullptr).
+InlineICRecipe InlineRecipeForCodegen(JSOp op, const CacheIRStubInfo* stubInfo);
 
 }  // namespace jit
 }  // namespace js

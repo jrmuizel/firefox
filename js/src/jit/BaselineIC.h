@@ -138,6 +138,8 @@ class ICStub {
     TypeDataMask = 0xff,
     IsFallback = 0x100,
     SafeForInline = 0x200,
+    // Set with SafeForInline for GetProp stubs that load a dynamic slot.
+    InlineDynamicSlot = 0x400,
   };
 
  private:
@@ -226,7 +228,11 @@ class ICStub {
   }
 
   void setSafeForInline() { flags_ |= uint32_t(Flags::SafeForInline); }
-  void clearSafeForInline() { flags_ &= ~uint32_t(Flags::SafeForInline); }
+  void setInlineDynamicSlot() { flags_ |= uint32_t(Flags::InlineDynamicSlot); }
+  void clearSafeForInline() {
+    flags_ &=
+        ~uint32_t(Flags::SafeForInline) & ~uint32_t(Flags::InlineDynamicSlot);
+  }
 
   static constexpr size_t offsetOfFlags() { return offsetof(ICStub, flags_); }
 };
