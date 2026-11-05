@@ -759,6 +759,80 @@ static bool IsTrianglePattern(MBasicBlock* initialBlock) {
   return true;
 }
 
+// Jump threading for blocks that only test a phi. If the phi's input from a
+// predecessor has a known truthiness on that edge, either because it's a
+// constant or because it's the condition the predecessor branched on, the
+// predecessor can branch directly to the corresponding target. For example,
+// |for (; v !== null && !f(v); ) { ... }| tests |v !== null| twice on the
+// path that exits the loop. Threading these edges also lets the code after the
+// test be dominated by the code computing the phi's other inputs.
+[[nodiscard]] static bool MaybeThreadTestBlock(MBasicBlock* block) {
+  if (block->numPredecessors() < 2 || block->isLoopHeader() ||
+      block->isLoopBackedge()) {
+    return true;
+  }
+
+  MPhi* phi = nullptr;
+  MTest* test = nullptr;
+  if (!BlockIsSingleTest(block, block, &phi, &test)) {
+    return true;
+  }
+
+  MBasicBlock* ifTrue = test->ifTrue();
+  MBasicBlock* ifFalse = test->ifFalse();
+  if (ifTrue == ifFalse || ifTrue->isLoopHeader() || ifFalse->isLoopHeader()) {
+    return true;
+  }
+
+  size_t i = 0;
+  while (i < block->numPredecessors() && block->numPredecessors() > 1) {
+    MBasicBlock* pred = block->getPredecessor(i);
+    MDefinition* value = phi->getOperand(i);
+    MControlInstruction* predLast = pred->lastIns()->toControlInstruction();
+
+    mozilla::Maybe<bool> known;
+    if (value->isConstant()) {
+      bool b;
+      if (value->toConstant()->valueToBoolean(&b)) {
+        known = mozilla::Some(b);
+      }
+    } else if (predLast->isTest()) {
+      MTest* predTest = predLast->toTest();
+      if (predTest->ifTrue() != predTest->ifFalse() &&
+          IsTestInputMaybeToBool(predTest, value)) {
+        known = mozilla::Some(predTest->ifTrue() == block);
+      }
+    }
+    if (known.isNothing()) {
+      i++;
+      continue;
+    }
+
+    MBasicBlock* target = *known ? ifTrue : ifFalse;
+
+    // Don't create a duplicate edge from |pred| to |target|.
+    bool alreadySucc = false;
+    for (size_t j = 0; j < predLast->numSuccessors(); j++) {
+      if (predLast->getSuccessor(j) == target) {
+        alreadySucc = true;
+      }
+    }
+    if (alreadySucc) {
+      i++;
+      continue;
+    }
+
+    predLast->replaceSuccessor(pred->getSuccessorIndex(block), target);
+    if (!target->addPredecessorSameInputsAs(pred, block)) {
+      return false;
+    }
+    value->setImplicitlyUsedUnchecked();
+    block->removePredecessor(pred);
+  }
+
+  return true;
+}
+
 bool jit::FoldTests(MIRGraph& graph) {
   for (PostorderIterator block(graph.poBegin()); block != graph.poEnd();
        block++) {
@@ -766,6 +840,9 @@ bool jit::FoldTests(MIRGraph& graph) {
       return false;
     }
     if (!MaybeFoldTestBlock(graph, *block)) {
+      return false;
+    }
+    if (!MaybeThreadTestBlock(*block)) {
       return false;
     }
   }
