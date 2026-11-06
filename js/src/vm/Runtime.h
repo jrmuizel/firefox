@@ -974,12 +974,26 @@ struct JSRuntime {
 
   js::MainThreadData<bool> autoWritableJitCodeActive_;
 
+  uint32_t baselineWarmUpThreshold_ = 0;
+
  public:
   // Note: these values may be toggled dynamically (in response to about:config
   // prefs changing).
   void setOffthreadBaselineCompilationEnabled(bool value) {
     offthreadBaselineCompilationEnabled_ = value;
+    updateBaselineWarmUpThreshold();
   }
+
+  // The warm-up count after which the Baseline Interpreter tries to
+  // Baseline-compile a script. When off-thread compilation is enabled this is
+  // the (lower) off-thread threshold, and scripts that can't be compiled
+  // off-thread wait for JitOptions.baselineJitWarmUpThreshold (see
+  // CanEnterBaselineJIT). Must be updated when either option changes.
+  uint32_t baselineWarmUpThreshold() const { return baselineWarmUpThreshold_; }
+  const uint32_t* addressOfBaselineWarmUpThreshold() const {
+    return &baselineWarmUpThreshold_;
+  }
+  void updateBaselineWarmUpThreshold();
   bool canUseOffthreadBaselineCompilation() const {
     return offthreadBaselineCompilationEnabled_;
   }

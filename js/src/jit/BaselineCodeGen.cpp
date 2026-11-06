@@ -2341,10 +2341,13 @@ bool BaselineInterpreterCodeGen::emitWarmUpCounterIncrement() {
   }
 
   // If the script is warm enough for Baseline compilation, call into the VM to
-  // compile it.
+  // compile it. The threshold depends on whether off-thread compilation is
+  // enabled, which can change at runtime; see
+  // JSRuntime::baselineWarmUpThreshold.
   Label done;
-  masm.branch32(Assembler::BelowOrEqual, countReg,
-                Imm32(JitOptions.baselineJitWarmUpThreshold), &done);
+  masm.branch32(Assembler::AboveOrEqual,
+                AbsoluteAddress(runtime->addressOfBaselineWarmUpThreshold()),
+                countReg, &done);
 
   masm.branchTestPtr(Assembler::NonZero,
                      Address(scriptReg, JitScript::offsetOfBaselineScript()),

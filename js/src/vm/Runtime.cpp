@@ -167,6 +167,15 @@ JSRuntime::~JSRuntime() {
   MOZ_ASSERT(numDebuggeeRealmsObservingCoverage_ == 0);
 }
 
+void JSRuntime::updateBaselineWarmUpThreshold() {
+  uint32_t threshold = jit::JitOptions.baselineJitWarmUpThreshold;
+  if (offthreadBaselineCompilationEnabled_) {
+    threshold =
+        std::min(threshold, jit::JitOptions.baselineOffThreadWarmUpThreshold);
+  }
+  baselineWarmUpThreshold_ = threshold;
+}
+
 bool JSRuntime::init(JSContext* cx, uint32_t maxbytes) {
 #ifdef DEBUG
   MOZ_ASSERT(!initialized_);
@@ -178,6 +187,7 @@ bool JSRuntime::init(JSContext* cx, uint32_t maxbytes) {
   }
 
   mainContext_ = cx;
+  updateBaselineWarmUpThreshold();
 
   if (!gc.init(maxbytes)) {
     return false;

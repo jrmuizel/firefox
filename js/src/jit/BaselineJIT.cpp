@@ -520,9 +520,17 @@ static MethodStatus CanEnterBaselineJIT(JSContext* cx, HandleScript script,
       mightHaveEagerBaselineHint = true;
     }
   }
-  // Check script warm-up counter if no hint.
+  // Check script warm-up counter if no hint. Scripts that will be compiled
+  // off-thread use the lower threshold; see JSRuntime::baselineWarmUpThreshold.
   if (!mightHaveEagerBaselineHint) {
-    if (script->getWarmUpCount() <= JitOptions.baselineJitWarmUpThreshold) {
+    uint32_t threshold = JitOptions.baselineJitWarmUpThreshold;
+    if (script->getWarmUpCount() <= threshold &&
+        !(osrSourceFrame && osrSourceFrame.isDebuggee()) &&
+        BaselineCompileTask::OffThreadBaselineCompilationAvailable(cx,
+                                                                   script)) {
+      threshold = cx->runtime()->baselineWarmUpThreshold();
+    }
+    if (script->getWarmUpCount() <= threshold) {
       return Method_Skipped;
     }
   }

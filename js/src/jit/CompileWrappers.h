@@ -80,6 +80,7 @@ class CompileRuntime {
   const void* addressOfJitStackLimit();
   const void* addressOfJitStackLimitNoInterrupt();
   const void* addressOfInterruptBits();
+  const uint32_t* addressOfBaselineWarmUpThreshold();
   const void* addressOfRealm();
   const void* addressOfZone();
   const void* addressOfMegamorphicCache();

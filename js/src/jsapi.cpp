@@ -4457,6 +4457,7 @@ JS_PUBLIC_API void JS_SetGlobalJitCompilerOption(JSContext* cx,
         value = defaultValues.baselineJitWarmUpThreshold;
       }
       jit::JitOptions.baselineJitWarmUpThreshold = value;
+      cx->runtime()->updateBaselineWarmUpThreshold();
       break;
     case JSJITCOMPILER_IC_FORCE_MEGAMORPHIC:
       jit::JitOptions.forceMegamorphicICs = !!value;

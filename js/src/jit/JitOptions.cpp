@@ -224,6 +224,13 @@ DefaultJitOptions::DefaultJitOptions() {
   // Duplicated in all.js - ensure both match.
   SET_DEFAULT(baselineJitWarmUpThreshold, 100);
 
+  // How many invocations or loop iterations are needed before functions are
+  // queued for off-thread Baseline compilation, when it's available. This is
+  // lower than baselineJitWarmUpThreshold because it costs the main thread
+  // little, and functions keep running in the Baseline Interpreter until the
+  // code is ready. See JSRuntime::baselineWarmUpThreshold.
+  SET_DEFAULT(baselineOffThreadWarmUpThreshold, 10);
+
   // How many scripts can be queued up for offthread baseline compilation
   // before they are dispatched.
   SET_DEFAULT(baselineQueueCapacity, 8);

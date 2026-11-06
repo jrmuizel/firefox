@@ -13403,6 +13403,11 @@ bool InitOptionParser(OptionParser& op) {
           "(default: 10)",
           -1) ||
       !op.addIntOption(
+          '\0', "baseline-offthread-warmup-threshold", "COUNT",
+          "Wait for COUNT calls or iterations before queueing scripts for "
+          "off-thread baseline compilation (default: 10)",
+          -1) ||
+      !op.addIntOption(
           '\0', "baseline-queue-capacity", "CAPACITY",
           "Wait for at most CAPACITY scripts to be added to baseline compile"
           "queue before dispatching (default: 8)",
@@ -14443,6 +14448,11 @@ bool SetContextJITOptions(JSContext* cx, const OptionParser& op) {
   warmUpThreshold = op.getIntOption("baseline-warmup-threshold");
   if (warmUpThreshold >= 0) {
     jit::JitOptions.baselineJitWarmUpThreshold = warmUpThreshold;
+  }
+
+  warmUpThreshold = op.getIntOption("baseline-offthread-warmup-threshold");
+  if (warmUpThreshold >= 0) {
+    jit::JitOptions.baselineOffThreadWarmUpThreshold = warmUpThreshold;
   }
 
   warmUpThreshold = op.getIntOption("trial-inlining-warmup-threshold");

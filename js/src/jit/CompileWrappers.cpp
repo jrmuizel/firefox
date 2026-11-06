@@ -75,6 +75,10 @@ const void* CompileRuntime::addressOfJitStackLimitNoInterrupt() {
   return cx->addressOfJitStackLimitNoInterrupt();
 }
 
+const uint32_t* CompileRuntime::addressOfBaselineWarmUpThreshold() {
+  return runtime()->addressOfBaselineWarmUpThreshold();
+}
+
 const void* CompileRuntime::addressOfInterruptBits() {
   return runtime()->mainContextFromAnyThread()->addressOfInterruptBits();
 }

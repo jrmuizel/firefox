@@ -100,6 +100,7 @@ struct DefaultJitOptions {
   bool emitInterpreterEntryTrampoline;
   uint32_t baselineInterpreterWarmUpThreshold;
   uint32_t baselineJitWarmUpThreshold;
+  uint32_t baselineOffThreadWarmUpThreshold;
   uint32_t baselineQueueCapacity;
   uint32_t trialInliningWarmUpThreshold;
   uint32_t trialInliningInitialWarmUpCount;
