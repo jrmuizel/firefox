@@ -1152,7 +1152,8 @@ template <typename Handler>
 void BaselineCodeGen<Handler>::emitInlineIncInt32(Label* failure, Label* done) {
   masm.branchTestInt32(Assembler::NotEqual, R0, failure);
 
-  Register scratch = R0.scratchReg();
+  // R0 must be preserved for the IC on overflow, so don't unbox in place.
+  Register scratch = R1.scratchReg();
   masm.unboxInt32(R0, scratch);
   masm.branchAdd32(Assembler::Overflow, Imm32(1), scratch, failure);
   masm.tagValue(JSVAL_TYPE_INT32, scratch, R0);
