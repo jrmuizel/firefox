@@ -31,6 +31,8 @@
                                         \
   _(WasmCodeProtected, 450)             \
                                         \
+  _(ExecutableAllocator, 460)           \
+                                        \
   _(WasmInitBuiltinThunks, 451)         \
                                         \
   _(StringsCache, 500)                  \

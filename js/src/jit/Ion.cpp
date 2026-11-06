@@ -623,20 +623,37 @@ template JitCode* JitCode::New<NoGC>(JSContext* cx, uint8_t* code,
                                      ExecutablePool* pool, CodeKind kind);
 
 void JitCode::copyFrom(MacroAssembler& masm) {
+  initForCopiedCode(CopyCode(masm, raw()));
+}
+
+/* static */
+JitCode::CopiedSizes JitCode::CopyCode(MacroAssembler& masm, uint8_t* raw) {
+  CopiedSizes sizes;
+  sizes.insnSize = masm.instructionsSize();
+  masm.executableCopy(raw);
+
+  // The data area is always empty; see dataOffset() and jumpRelocTableOffset().
+  sizes.jumpRelocTableBytes = masm.jumpRelocationTableBytes();
+  masm.copyJumpRelocationTable(raw + sizes.insnSize);
+
+  sizes.dataRelocTableBytes = masm.dataRelocationTableBytes();
+  masm.copyDataRelocationTable(raw + sizes.insnSize +
+                               sizes.jumpRelocTableBytes);
+
+  masm.processCodeLabels(raw);
+  return sizes;
+}
+
+void JitCode::initForCopiedCode(const CopiedSizes& sizes) {
+  MOZ_ASSERT(dataSize_ == 0);
+
   // Store the JitCode pointer in the JitCodeHeader so we can recover the
   // gcthing from relocation tables.
   JitCodeHeader::FromExecutable(raw())->init(this);
 
-  insnSize_ = masm.instructionsSize();
-  masm.executableCopy(raw());
-
-  jumpRelocTableBytes_ = masm.jumpRelocationTableBytes();
-  masm.copyJumpRelocationTable(raw() + jumpRelocTableOffset());
-
-  dataRelocTableBytes_ = masm.dataRelocationTableBytes();
-  masm.copyDataRelocationTable(raw() + dataRelocTableOffset());
-
-  masm.processCodeLabels(raw());
+  insnSize_ = sizes.insnSize;
+  jumpRelocTableBytes_ = sizes.jumpRelocTableBytes;
+  dataRelocTableBytes_ = sizes.dataRelocTableBytes;
 }
 
 void JitCode::traceChildren(JSTracer* trc) {

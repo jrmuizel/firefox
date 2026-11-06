@@ -9,6 +9,7 @@
 #include "jit/BytecodeAnalysis.h"
 #include "jit/CompileWrappers.h"
 #include "jit/FixedList.h"
+#include "jit/Linker.h"
 #include "jit/MacroAssembler.h"
 #include "jit/PerfSpewer.h"
 
@@ -495,9 +496,14 @@ class BaselineCompiler final : private BaselineCompilerCodeGen {
 
   BaselinePerfSpewer perfSpewer_;
 
+  // Code copied to executable memory by copyCodeOffThread, if any.
+  CopiedJitCode copiedCode_;
+  bool masmFinished_ = false;
+
  public:
   BaselineCompiler(TempAllocator& alloc, CompileRuntime* runtime,
                    MacroAssembler& masm, BaselineSnapshot* snapshot);
+  ~BaselineCompiler() { copiedCode_.release(); }
   [[nodiscard]] bool init();
 
   static bool PrepareToCompile(JSContext* cx, Handle<JSScript*> script,
@@ -505,6 +511,11 @@ class BaselineCompiler final : private BaselineCompilerCodeGen {
 
   MethodStatus compile(JSContext* cx);
   MethodStatus compileOffThread();
+
+  // After compileOffThread, copy the code to executable memory from
+  // |execAlloc| and link it, so that finishCompile only has to create the
+  // JitCode object. Falls back to doing everything in finishCompile on OOM.
+  void copyCodeOffThread(ExecutableAllocator& execAlloc);
 
   bool finishCompile(JSContext* cx);
 

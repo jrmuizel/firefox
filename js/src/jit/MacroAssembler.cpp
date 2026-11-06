@@ -4765,9 +4765,11 @@ void MacroAssembler::finish() {
   }
 }
 
-void MacroAssembler::link(JitCode* code) {
+void MacroAssembler::link(JitCode* code) { link(code->raw()); }
+
+void MacroAssembler::link(uint8_t* raw) {
   MOZ_ASSERT(!oom());
-  linkProfilerCallSites(code);
+  linkProfilerCallSites(raw);
 }
 
 void MacroAssembler::instrumentProfilerCallSite() {
@@ -4795,10 +4797,10 @@ MacroAssembler::AutoProfilerCallInstrumentation::
   masm.popRegs(reg2, reg);
 }
 
-void MacroAssembler::linkProfilerCallSites(JitCode* code) {
+void MacroAssembler::linkProfilerCallSites(uint8_t* raw) {
   for (size_t i = 0; i < profilerCallSites_.length(); i++) {
     CodeOffset offset = profilerCallSites_[i];
-    CodeLocationLabel location(code, offset);
+    CodeLocationLabel location(raw + offset.offset());
     PatchDataWithValueCheck(location, ImmPtr(location.raw()),
                             ImmPtr((void*)-1));
   }

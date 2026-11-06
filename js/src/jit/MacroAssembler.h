@@ -6219,7 +6219,7 @@ class MacroAssembler : public MacroAssemblerSpecific {
 
   // Fix up the code pointers to be written for locations where profilerCallSite
   // emitted moves of RIP to a register.
-  void linkProfilerCallSites(JitCode* code);
+  void linkProfilerCallSites(uint8_t* raw);
 
   // This field is used to manage profiling instrumentation output. If
   // provided and enabled, then instrumentation will be emitted around call
@@ -6264,6 +6264,8 @@ class MacroAssembler : public MacroAssemblerSpecific {
 
   void finish();
   void link(JitCode* code);
+  // Like link(), for code copied to |raw| without a JitCode object.
+  void link(uint8_t* raw);
 
   void assertUnreachable(const char* output);
 

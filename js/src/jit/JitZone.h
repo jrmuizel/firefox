@@ -89,7 +89,9 @@ class JitZone {
   BaselineCacheIRStubCodeMap baselineCacheIRStubCodes_;
 
   // Executable allocator for all code except wasm code.
-  MainThreadData<ExecutableAllocator> execAlloc_;
+  // Internally synchronized, as off-thread Baseline compilation allocates code
+  // from it. See ExecutableAllocator::allocOffThread.
+  ExecutableAllocator execAlloc_;
 
   // HashMap that maps scripts to compilations inlining those scripts.
   using InlinedScriptMap =
@@ -178,8 +180,8 @@ class JitZone {
     return baselineCacheIRStubCodes_.add(p, std::move(key), stubCode);
   }
 
-  ExecutableAllocator& execAlloc() { return execAlloc_.ref(); }
-  const ExecutableAllocator& execAlloc() const { return execAlloc_.ref(); }
+  ExecutableAllocator& execAlloc() { return execAlloc_; }
+  const ExecutableAllocator& execAlloc() const { return execAlloc_; }
 
   [[nodiscard]] bool addInlinedCompilation(const IonScriptKey& ionScriptKey,
                                            JSScript* inlined);

@@ -35,6 +35,8 @@
 #include "js/HashTable.h"
 #include "js/TypeDecls.h"
 #include "js/Vector.h"
+#include "threading/Mutex.h"
+#include "vm/MutexIDs.h"
 
 namespace JS {
 struct CodeSizes;
@@ -132,9 +134,13 @@ struct JitPoisonRange {
 
 using JitPoisonRangeVector = Vector<JitPoisonRange, 0, SystemAllocPolicy>;
 
+// Allocation, the release of individual allocations and purge() are
+// synchronized, as off-thread Baseline compilation allocates code (see
+// allocOffThread). Other operations, which only run on the main thread while
+// no off-thread compilation for the zone is in progress (during GC), aren't.
 class ExecutableAllocator {
  public:
-  ExecutableAllocator() = default;
+  ExecutableAllocator() : lock_(mutexid::ExecutableAllocator) {}
   ~ExecutableAllocator();
 
   ExecutableAllocator(const ExecutableAllocator&) = delete;
@@ -146,6 +152,9 @@ class ExecutableAllocator {
   // pointer to reference-counted pool. The caller owns a reference to the
   // pool; i.e. alloc() increments the count before returning the object.
   void* alloc(JSContext* cx, size_t n, ExecutablePool** poolp, CodeKind type);
+
+  // Like alloc(), but callable from any thread, and reports no errors.
+  void* allocOffThread(size_t n, ExecutablePool** poolp, CodeKind type);
 
   void releasePoolPages(ExecutablePool* pool);
 
@@ -195,6 +204,10 @@ class ExecutableAllocator {
       js::HashSet<ExecutablePool*, js::DefaultHasher<ExecutablePool*>,
                   js::SystemAllocPolicy>;
   ExecPoolHashSet m_pools;  // All pools, just for stats purposes.
+
+  mutable js::Mutex lock_ MOZ_UNANNOTATED;
+
+  friend class ExecutablePool;
 };
 
 }  // namespace jit

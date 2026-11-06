@@ -330,6 +330,14 @@ MethodStatus BaselineCompiler::compileOffThread() {
   return Method_Compiled;
 }
 
+void BaselineCompiler::copyCodeOffThread(ExecutableAllocator& execAlloc) {
+  MOZ_ASSERT(handler.compilingOffThread());
+  AutoCreatedBy acb(masm, "exception_tail");
+  Linker linker(masm);
+  masmFinished_ = true;
+  (void)linker.copyOffThread(execAlloc, CodeKind::Baseline, &copiedCode_);
+}
+
 bool BaselineCompiler::compileImpl() {
   MOZ_RELEASE_ASSERT(handler.script()->length() <= BaselineMaxScriptLength);
   MOZ_RELEASE_ASSERT(handler.script()->nslots() <= BaselineMaxScriptSlots);
@@ -379,14 +387,21 @@ bool BaselineCompiler::finishCompile(JSContext* cx) {
       ar.emplace(cx);
     }
 
-    AutoCreatedBy acb2(masm, "exception_tail");
-    Linker linker(masm);
-    if (masm.oom()) {
-      ReportOutOfMemory(cx);
-      return false;
+    // The linker keeps the code writable until the end of this scope, for
+    // toggleProfilerInstrumentation below. Code copied off-thread is always
+    // writable; see CanCopyJitCodeOffThread.
+    mozilla::Maybe<Linker> linker;
+    if (copiedCode_.hasCode()) {
+      code = Linker::newCodeForCopiedCode(cx, copiedCode_);
+    } else {
+      AutoCreatedBy acb2(masm, "exception_tail");
+      linker.emplace(masm, masmFinished_);
+      if (masm.oom()) {
+        ReportOutOfMemory(cx);
+        return false;
+      }
+      code = linker->newCode(cx, CodeKind::Baseline);
     }
-
-    code = linker.newCode(cx, CodeKind::Baseline);
     if (!code) {
       return false;
     }

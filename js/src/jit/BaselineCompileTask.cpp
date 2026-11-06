@@ -6,6 +6,8 @@
 
 #include "jit/JitRuntime.h"
 #include "jit/JitScript.h"
+#include "jit/JitZone.h"
+#include "jit/Linker.h"
 #include "vm/HelperThreadState.h"
 
 #include "vm/JSScript-inl.h"
@@ -55,6 +57,16 @@ void BaselineCompileTask::markScriptsAsCompiling() {
   }
 }
 
+/* static */
+ExecutableAllocator* OffThreadBaselineSnapshot::ExecAllocForOffThreadCopy(
+    JSScript* script) {
+  if (!CanCopyJitCodeOffThread()) {
+    return nullptr;
+  }
+  JitZone* jitZone = script->zone()->jitZone();
+  return jitZone ? &jitZone->execAlloc() : nullptr;
+}
+
 bool OffThreadBaselineSnapshot::compileOffThread(TempAllocator& temp,
                                                  CompileRealm* realm) {
   masm_.emplace(temp, realm);
@@ -64,7 +76,13 @@ bool OffThreadBaselineSnapshot::compileOffThread(TempAllocator& temp,
     return false;
   }
   MethodStatus status = compiler_->compileOffThread();
-  return status != Method_Error;
+  if (status == Method_Error) {
+    return false;
+  }
+  if (execAlloc_) {
+    compiler_->copyCodeOffThread(*execAlloc_);
+  }
+  return true;
 }
 
 void BaselineCompileTask::runTask() {

@@ -51,6 +51,7 @@ void ExecutablePool::release(bool willDestroy) {
 }
 
 void ExecutablePool::release(size_t n, CodeKind kind) {
+  LockGuard<Mutex> guard(m_allocator->lock_);
   m_codeBytes[kind] -= n;
   MOZ_ASSERT(m_codeBytes[kind] < m_allocation.size);  // Shouldn't underflow.
 
@@ -193,6 +194,13 @@ ExecutablePool* ExecutableAllocator::createPool(size_t n) {
 
 void* ExecutableAllocator::alloc(JSContext* cx, size_t n,
                                  ExecutablePool** poolp, CodeKind type) {
+  return allocOffThread(n, poolp, type);
+}
+
+void* ExecutableAllocator::allocOffThread(size_t n, ExecutablePool** poolp,
+                                          CodeKind type) {
+  LockGuard<Mutex> guard(lock_);
+
   // Caller must ensure 'n' is word-size aligned. If all allocations are
   // of word sized quantities, then all subsequent allocations will be
   // aligned.
@@ -227,6 +235,7 @@ void ExecutableAllocator::releasePoolPages(ExecutablePool* pool) {
 }
 
 void ExecutableAllocator::purge() {
+  LockGuard<Mutex> guard(lock_);
   for (size_t i = 0; i < m_smallPools.length();) {
     ExecutablePool* pool = m_smallPools[i];
     if (pool->m_refCount > 1) {
@@ -243,6 +252,7 @@ void ExecutableAllocator::purge() {
 }
 
 void ExecutableAllocator::addSizeOfCode(JS::CodeSizes* sizes) const {
+  LockGuard<Mutex> guard(lock_);
   for (auto iter = m_pools.iter(); !iter.done(); iter.next()) {
     ExecutablePool* pool = iter.get();
     sizes->ion += pool->m_codeBytes[CodeKind::Ion];

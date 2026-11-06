@@ -76,13 +76,21 @@ class OffThreadBaselineSnapshot
                             bool isIonCompileable,
                             bool compileDebugInstrumentation)
       : BaselineSnapshot(script, globalLexical, globalThis, baseWarmUpThreshold,
-                         isIonCompileable, compileDebugInstrumentation) {}
+                         isIonCompileable, compileDebugInstrumentation),
+        execAlloc_(ExecAllocForOffThreadCopy(script)) {}
   explicit OffThreadBaselineSnapshot(BaselineSnapshot other)
-      : BaselineSnapshot(other) {}
+      : BaselineSnapshot(other),
+        execAlloc_(ExecAllocForOffThreadCopy(other.script())) {}
 
   bool compileOffThread(TempAllocator& temp, CompileRealm* realm);
 
  private:
+  // The executable allocator to copy the code to off the main thread, or
+  // nullptr if this is done on the main thread. See
+  // BaselineCompiler::copyCodeOffThread.
+  static ExecutableAllocator* ExecAllocForOffThreadCopy(JSScript* script);
+  ExecutableAllocator* execAlloc_;
+
   mozilla::Maybe<OffThreadMacroAssembler> masm_;
   mozilla::Maybe<BaselineCompiler> compiler_;
 

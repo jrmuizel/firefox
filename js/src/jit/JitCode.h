@@ -131,6 +131,21 @@ class JitCode : public gc::TenuredCellWithNonGCPointer<uint8_t> {
 
   void copyFrom(MacroAssembler& masm);
 
+  // Sizes of the parts of a code buffer filled in by CopyCode.
+  struct CopiedSizes {
+    uint32_t insnSize = 0;
+    uint32_t jumpRelocTableBytes = 0;
+    uint32_t dataRelocTableBytes = 0;
+  };
+
+  // Copy the contents of |masm| to the code buffer starting at |raw|, without
+  // a JitCode object. Can be called off the main thread. See
+  // Linker::copyOffThread.
+  static CopiedSizes CopyCode(MacroAssembler& masm, uint8_t* raw);
+
+  // Initialize a JitCode object whose code buffer was filled in by CopyCode.
+  void initForCopiedCode(const CopiedSizes& sizes);
+
   static JitCode* FromExecutable(uint8_t* buffer) {
     JitCode* code = JitCodeHeader::FromExecutable(buffer)->jitCode_;
     MOZ_ASSERT(code->raw() == buffer);
