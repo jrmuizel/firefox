@@ -101,6 +101,8 @@ struct DefaultJitOptions {
   uint32_t baselineInterpreterWarmUpThreshold;
   uint32_t baselineJitWarmUpThreshold;
   uint32_t baselineOffThreadWarmUpThreshold;
+  bool baselineRealmIndependent;
+  bool baselineCodeCache;
   uint32_t baselineQueueCapacity;
   uint32_t trialInliningWarmUpThreshold;
   uint32_t trialInliningInitialWarmUpCount;

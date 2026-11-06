@@ -509,6 +509,14 @@ static MethodStatus CanEnterBaselineJIT(JSContext* cx, HandleScript script,
     return Method_Skipped;
   }
 
+  bool attached;
+  if (!MaybeAttachCachedBaselineCode(cx, script, &attached)) {
+    return Method_Error;
+  }
+  if (attached) {
+    return Method_Compiled;
+  }
+
   // If a hint is available, skip the warmup count threshold.
   bool mightHaveEagerBaselineHint = false;
   if (!JitOptions.disableJitHints && !script->noEagerBaselineHint() &&
@@ -566,6 +574,177 @@ bool jit::CanBaselineInterpretScript(JSScript* script) {
   }
 
   return true;
+}
+
+bool jit::UseBaselineCodeCache(JSScript* script) {
+  return JitOptions.baselineCodeCache && !script->selfHosted() &&
+         IsRealmIndependentBaselineCode(script);
+}
+
+/* static */
+BaselineCodeCache::Key BaselineCodeCache::Key::Make(
+    JSScript* script, uint32_t baseWarmUpThreshold, bool isIonCompileable,
+    bool compileDebugInstrumentation) {
+  Key key;
+  key.sharedData = script->sharedData();
+  key.immutableFlags = script->immutableFlags().toRaw();
+  if (JSFunction* fun = script->function()) {
+    key.functionFlags = fun->flags().toRaw() & ~FunctionFlags::MUTABLE_FLAGS;
+    key.nargs = fun->nargs();
+  }
+  key.baseWarmUpThreshold = baseWarmUpThreshold;
+  key.compileDebugInstrumentation = compileDebugInstrumentation;
+  key.isIonCompileable = isIonCompileable;
+  return key;
+}
+
+/* static */
+BaselineCodeCache::Key BaselineCodeCache::Key::ForScript(JSContext* cx,
+                                                         JSScript* script) {
+  // This must match the values BaselineCompile passes to the compiler.
+  uint32_t baseWarmUpThreshold =
+      OptimizationInfo::baseWarmUpThresholdForScript(cx, script);
+  bool isIonCompileable = IsIonEnabled(cx) && CanIonCompileScript(cx, script);
+  return Make(script, baseWarmUpThreshold, isIonCompileable,
+              script->isDebuggee());
+}
+
+/* static */
+HashNumber BaselineCodeCache::Key::hash(const Lookup& key) {
+  return mozilla::AddToHash(
+      mozilla::HashGeneric(key.sharedData, key.immutableFlags,
+                           key.functionFlags, key.nargs),
+      key.baseWarmUpThreshold, key.compileDebugInstrumentation,
+      key.isIonCompileable);
+}
+
+/* static */
+bool BaselineCodeCache::Key::match(const Key& a, const Lookup& b) {
+  return a.sharedData == b.sharedData && a.immutableFlags == b.immutableFlags &&
+         a.functionFlags == b.functionFlags && a.nargs == b.nargs &&
+         a.baseWarmUpThreshold == b.baseWarmUpThreshold &&
+         a.compileDebugInstrumentation == b.compileDebugInstrumentation &&
+         a.isIonCompileable == b.isIonCompileable;
+}
+
+bool BaselineCodeCache::put(JSContext* cx, JSScript* script, const Key& key,
+                            Entry&& entry) {
+  MOZ_ASSERT(script->hasBaselineScript());
+  auto p = map_.lookupForAdd(key);
+  if (p) {
+    return true;
+  }
+  BaselineScript* copy = BaselineScript::Copy(cx, script->baselineScript());
+  if (!copy) {
+    return false;
+  }
+  entry.sharedData = script->sharedData();
+  entry.baselineScript = copy;
+  if (!map_.add(p, key, std::move(entry))) {
+    BaselineScript::Destroy(cx->gcContext(), copy);
+    return false;
+  }
+  return true;
+}
+
+bool BaselineCodeCache::maybeAttach(JSContext* cx, JSScript* script,
+                                    bool* attached) {
+  *attached = false;
+  if (map_.empty() || script->hasBaselineScript() ||
+      script->isBaselineCompilingOffThread() ||
+      !CanBaselineCompileScript(cx, script)) {
+    return true;
+  }
+
+  Key key = Key::ForScript(cx, script);
+  auto p = map_.lookup(key);
+  if (!p) {
+    return true;
+  }
+  const Entry& entry = p->value();
+
+  // Profiler instrumentation is toggled in place, so it must match.
+  JitRuntime* jitRuntime = cx->runtime()->jitRuntime();
+  if (entry.baselineScript->isProfilerInstrumentationOn() !=
+      jitRuntime->isProfilerInstrumentationEnabled(cx->runtime())) {
+    return true;
+  }
+
+  if (!cx->zone()->ensureJitZoneExists(cx)) {
+    return false;
+  }
+  Rooted<JSScript*> rooted(cx, script);
+  if (!BaselineCompiler::PrepareToCompile(cx, rooted,
+                                          key.compileDebugInstrumentation)) {
+    return false;
+  }
+
+  BaselineScript* baselineScript =
+      BaselineScript::Copy(cx, entry.baselineScript);
+  if (!baselineScript) {
+    return false;
+  }
+
+  // Replay the side effects of compiling |script|. See
+  // BaselineCompiler::finishCompile.
+  if (entry.ionDisabled) {
+    script->disableIon();
+  }
+  if (entry.inliningDisabled) {
+    script->setUninlineable();
+  }
+  JitScript* jitScript = script->jitScript();
+  jitScript->setRanBytecodeAnalysis();
+  {
+    ICScript* icScript = jitScript->icScript();
+    gc::AutoMarkingLock lock(script->zone(), icScript->markingLock());
+    for (uint32_t allocSiteIndex : entry.allocSiteIndices) {
+      CreateAllocSitesForICChain(script, allocSiteIndex, lock);
+    }
+    if (entry.needsEnvAllocSite) {
+      icScript->ensureEnvAllocSite(script, lock);
+    }
+  }
+  jitScript->setIonThreshold(entry.ionThreshold);
+  jitScript->setBaselineScript(script, baselineScript);
+  *attached = true;
+  return true;
+}
+
+void BaselineCodeCache::clear(JS::GCContext* gcx) {
+  for (auto iter = map_.iter(); !iter.done(); iter.next()) {
+    BaselineScript::Destroy(gcx, iter.get().value().baselineScript);
+  }
+  map_.clear();
+}
+
+bool jit::MaybeAttachCachedBaselineCode(JSContext* cx, JSScript* script,
+                                        bool* attached) {
+  *attached = false;
+  if (!UseBaselineCodeCache(script)) {
+    return true;
+  }
+  BaselineCodeCache* cache =
+      cx->runtime()->jitRuntime()->maybeBaselineCodeCache();
+  if (!cache) {
+    return true;
+  }
+  return cache->maybeAttach(cx, script, attached);
+}
+
+BaselineCodeCache* JitRuntime::getOrCreateBaselineCodeCache() {
+  if (!baselineCodeCache_) {
+    baselineCodeCache_ = js_new<BaselineCodeCache>();
+  }
+  return baselineCodeCache_;
+}
+
+void JitRuntime::destroyBaselineCodeCache(JS::GCContext* gcx) {
+  if (baselineCodeCache_) {
+    baselineCodeCache_->clear(gcx);
+    js_delete(baselineCodeCache_.ref());
+    baselineCodeCache_ = nullptr;
+  }
 }
 
 bool jit::CanBaselineCompileScript(JSContext* cx, JSScript* script) {

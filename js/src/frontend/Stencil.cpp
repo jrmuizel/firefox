@@ -2700,6 +2700,23 @@ static bool MaybeDoEagerBaselineCompilations(JSContext* cx,
     return false;
   }
 
+  // Attach Baseline code cached from earlier instantiations of the same
+  // functions, e.g. on a previous load of the page.
+  if (jit::JitOptions.baselineCodeCache) {
+    for (auto item :
+         CompilationStencil::functionScriptStencils(stencil, gcOutput)) {
+      JSFunction* fun = item.function;
+      if (!fun->hasBytecode()) {
+        continue;
+      }
+      bool attached;
+      if (!jit::MaybeAttachCachedBaselineCode(cx, fun->nonLazyScript(),
+                                              &attached)) {
+        return false;
+      }
+    }
+  }
+
   jit::JitHintsMap* jitHints = nullptr;
   if (!doAggressive) {
     if (jit::JitOptions.disableJitHints ||
@@ -2741,7 +2758,8 @@ static bool MaybeDoEagerBaselineCompilations(JSContext* cx,
       }
     }
 
-    if (!jit::CanBaselineCompileScript(cx, script)) {
+    if (script->hasBaselineScript() ||
+        !jit::CanBaselineCompileScript(cx, script)) {
       continue;
     }
 

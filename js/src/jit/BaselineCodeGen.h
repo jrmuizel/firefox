@@ -18,9 +18,17 @@ namespace js {
 class NamedLambdaObject;
 class SourceLocationIterator;  // from vm/JSScript.h
 
+namespace gc {
+class AutoMarkingLock;
+}
+
 namespace jit {
 
 class BaselineSnapshot;
+
+bool IsRealmIndependentBaselineCode(JSScript* script);
+void CreateAllocSitesForICChain(JSScript* script, uint32_t entryIndex,
+                                const gc::AutoMarkingLock& lock);
 
 enum class ScriptGCThingType {
   Atom,
@@ -363,6 +371,8 @@ class BaselineCompilerHandler {
 
   bool compileDebugInstrumentation_;
   bool ionCompileable_;
+  // The snapshot's value of ionCompileable_, for BaselineCodeCache::Key.
+  bool snapshotIonCompileable_;
 
   bool compilingOffThread_ = false;
 
@@ -423,6 +433,7 @@ class BaselineCompilerHandler {
 
   bool maybeIonCompileable() const { return ionCompileable_; }
   void setIonCompileable(bool value) { ionCompileable_ = value; }
+  bool snapshotIonCompileable() const { return snapshotIonCompileable_; }
 
   uint32_t icEntryIndex() const { return icEntryIndex_; }
   void moveToNextICEntry() { icEntryIndex_++; }
@@ -461,6 +472,10 @@ class BaselineCompilerHandler {
     return allocSiteIndices_.append(entryIndex);
   }
   void createAllocSites();
+  const AllocSiteIndexVector& allocSiteIndices() const {
+    return allocSiteIndices_;
+  }
+  bool needsEnvAllocSite() const { return needsEnvAllocSite_; }
 
   bool compilingOffThread() const { return compilingOffThread_; }
   void setCompilingOffThread() { compilingOffThread_ = true; }
@@ -471,8 +486,7 @@ class BaselineCompilerHandler {
   }
 
   bool realmIndependentJitcode() const {
-    return JS::Prefs::experimental_self_hosted_cache() &&
-           script()->selfHosted();
+    return IsRealmIndependentBaselineCode(script());
   }
 
   bool needsProfilerCallSiteInstrumentation() const { return true; }

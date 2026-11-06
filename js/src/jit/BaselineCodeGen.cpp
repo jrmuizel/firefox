@@ -90,7 +90,8 @@ BaselineCompilerHandler::BaselineCompilerHandler(MacroAssembler& masm,
       icEntryIndex_(0),
       baseWarmUpThreshold_(snapshot->baseWarmUpThreshold()),
       compileDebugInstrumentation_(snapshot->compileDebugInstrumentation()),
-      ionCompileable_(snapshot->isIonCompileable()) {
+      ionCompileable_(snapshot->isIonCompileable()),
+      snapshotIonCompileable_(snapshot->isIonCompileable()) {
 }
 
 BaselineInterpreterHandler::BaselineInterpreterHandler(MacroAssembler& masm)
@@ -471,6 +472,27 @@ bool BaselineCompiler::finishCompile(JSContext* cx) {
 
   script->jitScript()->setBaselineScript(script, baselineScript.release());
 
+  if (UseBaselineCodeCache(script)) {
+    // The cache is an optimization, so ignore OOM.
+    BaselineCodeCache::Entry entry;
+    entry.needsEnvAllocSite = handler.needsEnvAllocSite();
+    entry.ionDisabled = handler.analysis().isIonDisabled();
+    entry.inliningDisabled = handler.analysis().isInliningDisabled();
+    entry.ionThreshold = handler.baseWarmUpThreshold();
+    BaselineCodeCache* cache =
+        cx->runtime()->jitRuntime()->getOrCreateBaselineCodeCache();
+    if (!cache ||
+        !entry.allocSiteIndices.appendAll(handler.allocSiteIndices()) ||
+        !cache->put(
+            cx, script,
+            BaselineCodeCache::Key::Make(script, handler.baseWarmUpThreshold(),
+                                         handler.snapshotIonCompileable(),
+                                         compileDebugInstrumentation()),
+            std::move(entry))) {
+      cx->recoverFromOutOfMemory();
+    }
+  }
+
   perfSpewer_.saveProfile(cx, script, code);
 
 #ifdef MOZ_VTUNE
@@ -760,8 +782,8 @@ static bool CreateAllocSitesForCacheIRStub(JSScript* script, uint32_t pcOffset,
   return true;
 }
 
-static void CreateAllocSitesForICChain(JSScript* script, uint32_t entryIndex,
-                                       const gc::AutoMarkingLock& lock) {
+void jit::CreateAllocSitesForICChain(JSScript* script, uint32_t entryIndex,
+                                     const gc::AutoMarkingLock& lock) {
   JitScript* jitScript = script->jitScript();
   ICStub* stub = jitScript->icEntry(entryIndex).firstStub();
   uint32_t pcOffset = jitScript->fallbackStub(entryIndex)->pcOffset();

@@ -562,6 +562,72 @@ bool DispatchOffThreadBaselineBatch(JSContext* cx);
 MethodStatus BaselineCompile(JSContext* cx, JSScript* script,
                              BaselineOptions options);
 
+// [SMDOC] Baseline code cache
+//
+// With JitOptions.baselineCodeCache, Baseline code is compiled in
+// realm-independent mode (see IsRealmIndependentBaselineCode) and kept in a
+// runtime-wide cache, so that scripts with the same bytecode in other realms,
+// e.g. after a page reload, reuse it instead of being compiled again.
+//
+// The key is the script's SharedImmutableScriptData, which is deduplicated by
+// content across the runtime, plus the script and function flags and compile
+// options the Baseline compiler bakes into the code. Each entry also records
+// the per-script side effects of compilation that must be replayed when the
+// code is attached to another script.
+class BaselineCodeCache {
+ public:
+  struct Key {
+    SharedImmutableScriptData* sharedData = nullptr;
+    uint32_t immutableFlags = 0;
+    uint16_t functionFlags = 0;
+    uint16_t nargs = 0;
+    uint32_t baseWarmUpThreshold = 0;
+    bool compileDebugInstrumentation = false;
+    bool isIonCompileable = false;
+
+    static Key Make(JSScript* script, uint32_t baseWarmUpThreshold,
+                    bool isIonCompileable, bool compileDebugInstrumentation);
+    // The key BaselineCompile would use for |script| now.
+    static Key ForScript(JSContext* cx, JSScript* script);
+
+    using Lookup = Key;
+    static HashNumber hash(const Lookup& key);
+    static bool match(const Key& a, const Lookup& b);
+  };
+
+  struct Entry {
+    // Keeps |Key::sharedData| from being freed and its address reused.
+    RefPtr<SharedImmutableScriptData> sharedData;
+    BaselineScript* baselineScript = nullptr;
+    Vector<uint32_t, 4, SystemAllocPolicy> allocSiteIndices;
+    bool needsEnvAllocSite = false;
+    bool ionDisabled = false;
+    bool inliningDisabled = false;
+    uint32_t ionThreshold = 0;
+  };
+
+  // Add the Baseline code of |script|, which was just compiled, to the cache.
+  // Returns false on OOM; the cache is an optimization, so callers may ignore
+  // it.
+  bool put(JSContext* cx, JSScript* script, const Key& key, Entry&& entry);
+
+  // If the cache has code for |script|, attach it. Returns false on OOM.
+  bool maybeAttach(JSContext* cx, JSScript* script, bool* attached);
+
+  void clear(JS::GCContext* gcx);
+
+ private:
+  HashMap<Key, Entry, Key, SystemAllocPolicy> map_;
+};
+
+// Whether Baseline code for |script| goes in the BaselineCodeCache.
+bool UseBaselineCodeCache(JSScript* script);
+
+// Attach cached Baseline code to |script|, if the cache has code for it.
+// Returns false on OOM.
+bool MaybeAttachCachedBaselineCode(JSContext* cx, JSScript* script,
+                                   bool* attached);
+
 // Class storing the generated Baseline Interpreter code for the runtime.
 class BaselineInterpreter {
  public:

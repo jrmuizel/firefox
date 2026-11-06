@@ -11,6 +11,7 @@
 #include "gc/Zone.h"
 #include "jit/BaselineJIT.h"
 #include "jit/InlineScriptTree.h"
+#include "jit/JitOptions.h"
 #include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
 #include "js/Prefs.h"  // JS::Prefs
@@ -29,7 +30,13 @@ namespace js {
 namespace jit {
 
 bool IsRealmIndependentBaselineCode(JSScript* script) {
-  return JS::Prefs::experimental_self_hosted_cache() && script->selfHosted();
+  if (script->selfHosted()) {
+    return JS::Prefs::experimental_self_hosted_cache();
+  }
+  // Realm-independent code doesn't support code coverage (bug 1980266).
+  return (JitOptions.baselineRealmIndependent ||
+          JitOptions.baselineCodeCache) &&
+         !script->hasScriptCounts();
 }
 
 bool AddBaselineJitcodeGlobalEntry(JSContext* cx, JSScript* script,

@@ -448,6 +448,9 @@ void js::gc::GCRuntime::finishRoots() {
   finishPersistentRoots();
 
   rt->finishSelfHosting();
+  if (rt->hasJitRuntime()) {
+    rt->jitRuntime()->destroyBaselineCodeCache(rt->gcContext());
+  }
 
   for (ZonesIter zone(rt, WithAtoms); !zone.done(); zone.next()) {
     zone->finishRoots();

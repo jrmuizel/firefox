@@ -112,6 +112,7 @@ enum class IonGenericCallKind { Call, Construct, Count };
 using EnterJitCode = void (*)(void*, unsigned int, Value*, InterpreterFrame*,
                               CalleeToken, JSObject*, size_t, Value*);
 
+class BaselineCodeCache;
 class JitcodeGlobalTable;
 class PerfSpewerRangeRecorder;
 
@@ -211,6 +212,8 @@ class JitRuntime {
 
   // Map that stores Jit Hints for each script.
   MainThreadData<JitHintsMap*> jitHintsMap_{nullptr};
+
+  MainThreadData<BaselineCodeCache*> baselineCodeCache_{nullptr};
 
 #ifdef DEBUG
   // The number of possible bailing places encountered before forcefully bailing
@@ -499,6 +502,11 @@ class JitRuntime {
   }
 
   bool hasJitHintsMap() const { return jitHintsMap_ != nullptr; }
+
+  // Returns nullptr on OOM.
+  BaselineCodeCache* getOrCreateBaselineCodeCache();
+  BaselineCodeCache* maybeBaselineCodeCache() { return baselineCodeCache_; }
+  void destroyBaselineCodeCache(JS::GCContext* gcx);
 
   JitHintsMap* getJitHintsMap() {
     MOZ_ASSERT(hasJitHintsMap());

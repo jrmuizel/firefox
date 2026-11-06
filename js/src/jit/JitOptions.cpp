@@ -231,6 +231,14 @@ DefaultJitOptions::DefaultJitOptions() {
   // code is ready. See JSRuntime::baselineWarmUpThreshold.
   SET_DEFAULT(baselineOffThreadWarmUpThreshold, 10);
 
+  // Whether to compile all Baseline code in realm-independent mode, as is done
+  // for self-hosted code with experimental_self_hosted_cache.
+  SET_DEFAULT(baselineRealmIndependent, false);
+
+  // Whether to share Baseline code between scripts with the same bytecode
+  // across realms. See BaselineCodeCache. Implies realm-independent code.
+  SET_DEFAULT(baselineCodeCache, false);
+
   // How many scripts can be queued up for offthread baseline compilation
   // before they are dispatched.
   SET_DEFAULT(baselineQueueCapacity, 8);

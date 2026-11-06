@@ -13402,6 +13402,12 @@ bool InitOptionParser(OptionParser& op) {
           "Wait for COUNT calls or iterations before baseline-compiling "
           "(default: 10)",
           -1) ||
+      !op.addBoolOption('\0', "baseline-code-cache",
+                        "Share Baseline code between scripts with the same "
+                        "bytecode across realms") ||
+      !op.addBoolOption(
+          '\0', "baseline-realm-independent",
+          "Compile all Baseline code in realm-independent mode") ||
       !op.addIntOption(
           '\0', "baseline-offthread-warmup-threshold", "COUNT",
           "Wait for COUNT calls or iterations before queueing scripts for "
@@ -14448,6 +14454,13 @@ bool SetContextJITOptions(JSContext* cx, const OptionParser& op) {
   warmUpThreshold = op.getIntOption("baseline-warmup-threshold");
   if (warmUpThreshold >= 0) {
     jit::JitOptions.baselineJitWarmUpThreshold = warmUpThreshold;
+  }
+
+  if (op.getBoolOption("baseline-code-cache")) {
+    jit::JitOptions.baselineCodeCache = true;
+  }
+  if (op.getBoolOption("baseline-realm-independent")) {
+    jit::JitOptions.baselineRealmIndependent = true;
   }
 
   warmUpThreshold = op.getIntOption("baseline-offthread-warmup-threshold");

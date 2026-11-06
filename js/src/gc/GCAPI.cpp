@@ -105,6 +105,9 @@ void js::ReleaseAllJITCode(JS::GCContext* gcx) {
   }
 
   gcx->runtime()->clearSelfHostedJitCache();
+  if (gcx->runtime()->hasJitRuntime()) {
+    gcx->runtime()->jitRuntime()->destroyBaselineCodeCache(gcx);
+  }
 }
 
 AutoSuppressGC::AutoSuppressGC(JSContext* cx)
