@@ -63,13 +63,16 @@ ExecutableAllocator* OffThreadBaselineSnapshot::ExecAllocForOffThreadCopy(
   if (!CanCopyJitCodeOffThread()) {
     return nullptr;
   }
-  JitZone* jitZone = script->zone()->jitZone();
+  Zone* zone = IsRealmIndependentBaselineCode(script)
+                   ? script->runtimeFromMainThread()->atomsZone()
+                   : script->zone();
+  JitZone* jitZone = zone->jitZone();
   return jitZone ? &jitZone->execAlloc() : nullptr;
 }
 
 bool OffThreadBaselineSnapshot::compileOffThread(TempAllocator& temp,
                                                  CompileRealm* realm) {
-  masm_.emplace(temp, realm);
+  masm_.emplace(temp, realm->runtime(), realmIndependent_ ? nullptr : realm);
   compiler_.emplace(temp, realm->runtime(), masm_.ref(), this);
 
   if (!compiler_->init()) {

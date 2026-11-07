@@ -77,9 +77,11 @@ class OffThreadBaselineSnapshot
                             bool compileDebugInstrumentation)
       : BaselineSnapshot(script, globalLexical, globalThis, baseWarmUpThreshold,
                          isIonCompileable, compileDebugInstrumentation),
+        realmIndependent_(IsRealmIndependentBaselineCode(script)),
         execAlloc_(ExecAllocForOffThreadCopy(script)) {}
   explicit OffThreadBaselineSnapshot(BaselineSnapshot other)
       : BaselineSnapshot(other),
+        realmIndependent_(IsRealmIndependentBaselineCode(other.script())),
         execAlloc_(ExecAllocForOffThreadCopy(other.script())) {}
 
   bool compileOffThread(TempAllocator& temp, CompileRealm* realm);
@@ -89,6 +91,9 @@ class OffThreadBaselineSnapshot
   // nullptr if this is done on the main thread. See
   // BaselineCompiler::copyCodeOffThread.
   static ExecutableAllocator* ExecAllocForOffThreadCopy(JSScript* script);
+  // Whether to compile realm-independent code, which doesn't depend on the
+  // realm and is allocated in the atoms zone.
+  bool realmIndependent_;
   ExecutableAllocator* execAlloc_;
 
   mozilla::Maybe<OffThreadMacroAssembler> masm_;

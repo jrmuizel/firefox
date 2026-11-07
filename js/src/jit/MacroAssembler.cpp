@@ -4917,7 +4917,12 @@ StackMacroAssembler::StackMacroAssembler(JSContext* cx, TempAllocator& alloc)
 
 OffThreadMacroAssembler::OffThreadMacroAssembler(TempAllocator& alloc,
                                                  CompileRealm* realm)
-    : MacroAssembler(alloc, realm->runtime(), realm) {
+    : OffThreadMacroAssembler(alloc, realm->runtime(), realm) {}
+
+OffThreadMacroAssembler::OffThreadMacroAssembler(TempAllocator& alloc,
+                                                 CompileRuntime* runtime,
+                                                 CompileRealm* maybeRealm)
+    : MacroAssembler(alloc, runtime, maybeRealm) {
   MOZ_ASSERT(CurrentThreadIsOffThreadCompiling());
 }
 

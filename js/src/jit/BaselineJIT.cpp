@@ -222,7 +222,15 @@ bool BaselineCompileTask::OffThreadBaselineCompilationAvailable(
   if (script->isDebuggee()) {
     return false;
   }
-  if (IsRealmIndependentBaselineCode(script)) {
+  // Self-hosted code is compiled on the main thread to fill the self-hosted
+  // JIT cache; see
+  // InitialStencilAndDelazifications::instantiateSelfHostedForRuntime.
+  if (script->selfHosted() && IsRealmIndependentBaselineCode(script)) {
+    return false;
+  }
+  // Realm-independent code is allocated in the atoms zone.
+  if (IsRealmIndependentBaselineCode(script) &&
+      !cx->runtime()->atomsZone()->jitZone()) {
     return false;
   }
   return CanUseExtraThreads();

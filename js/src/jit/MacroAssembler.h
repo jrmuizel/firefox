@@ -6413,6 +6413,10 @@ class MOZ_RAII WasmMacroAssembler : public MacroAssembler {
 class OffThreadMacroAssembler : public MacroAssembler {
  public:
   OffThreadMacroAssembler(TempAllocator& alloc, CompileRealm* realm);
+  // For code that doesn't depend on a realm, e.g. realm-independent Baseline
+  // code. |maybeRealm| may be nullptr.
+  OffThreadMacroAssembler(TempAllocator& alloc, CompileRuntime* runtime,
+                          CompileRealm* maybeRealm);
 };
 
 //{{{ check_macroassembler_style

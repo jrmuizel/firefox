@@ -1506,6 +1506,15 @@ void BaselineCodeGen<Handler>::pushGlobalLexicalEnvironmentValue(
 
 template <>
 void BaselineCompilerCodeGen::loadGlobalThisValue(ValueOperand dest) {
+  if (handler.realmIndependentJitcode()) {
+    Register scratch = dest.scratchReg();
+    loadGlobalLexicalEnvironment(scratch);
+    masm.loadValue(
+        Address(scratch,
+                GlobalLexicalEnvironmentObject::offsetOfThisValueSlot()),
+        dest);
+    return;
+  }
   JSObject* thisObj = handler.globalThis();
   masm.moveValue(ObjectValue(*thisObj), dest);
 }
