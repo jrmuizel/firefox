@@ -595,7 +595,24 @@ class BaselineCodeCache {
     static bool match(const Key& a, const Lookup& b);
   };
 
+  // The layout of an environment object template, which realm-independent
+  // code allocating environments inline depends on. Templates aren't part of
+  // the key as they're only created when a script is first compiled.
+  struct EnvironmentLayout {
+    uint32_t allocKind = 0;
+    uint32_t slotSpan = 0;
+    uint32_t startOfUninitialized = 0;
+    uint32_t startOfUndefined = 0;
+    bool present = false;
+
+    static EnvironmentLayout Of(NativeObject* templateObj);
+    bool operator==(const EnvironmentLayout& other) const = default;
+  };
+
   struct Entry {
+    EnvironmentLayout callObjectLayout;
+    EnvironmentLayout namedLambdaLayout;
+
     // Keeps |Key::sharedData| from being freed and its address reused.
     RefPtr<SharedImmutableScriptData> sharedData;
     BaselineScript* baselineScript = nullptr;

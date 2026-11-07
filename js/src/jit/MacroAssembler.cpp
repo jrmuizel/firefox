@@ -276,9 +276,11 @@ void MacroAssembler::checkAllocatorState(Register temp, gc::AllocKind allocKind,
 
   // If the zone has a realm with an object allocation metadata hook, emit a
   // guard for this. Note that IC stubs and some other trampolines can be shared
-  // across realms, so we don't bake in a realm pointer.
+  // across realms, so we don't bake in a realm pointer. Code compiled without
+  // a realm (realm-independent Baseline code) can run in any zone, so always
+  // emit the guard.
   if (gc::IsObjectAllocKind(allocKind) &&
-      realm()->zone()->hasRealmWithAllocMetadataBuilder()) {
+      (!maybeRealm() || realm()->zone()->hasRealmWithAllocMetadataBuilder())) {
     loadJSContext(temp);
     loadPtr(Address(temp, JSContext::offsetOfRealm()), temp);
     branch32(Assembler::NotEqual,
@@ -331,7 +333,7 @@ void MacroAssembler::nurseryAllocateObject(Register result, Register temp,
 
   // No explicit check for nursery.isEnabled() is needed, as the comparison
   // with the nursery's end will always fail in such cases.
-  CompileZone* zone = realm()->zone();
+  CompileZone* zone = maybeRealm() ? realm()->zone() : nullptr;
   size_t thingSize = gc::Arena::thingSize(allocKind);
   size_t totalSize = thingSize;
   if (nDynamicSlots) {
@@ -422,8 +424,9 @@ void MacroAssembler::allocateObject(Register result, Register temp,
   }
 
   // Fall back to calling into the VM to allocate objects in the tenured heap
-  // that have dynamic slots.
-  if (nDynamicSlots) {
+  // that have dynamic slots, or if there's no zone to allocate from (code
+  // compiled without a realm).
+  if (nDynamicSlots || !maybeRealm()) {
     jump(fail);
     return;
   }
@@ -449,6 +452,52 @@ void MacroAssembler::createGCObject(Register obj, Register temp,
   allocateObject(obj, temp, allocKind, nDynamicSlots, initialHeap, fail,
                  allocSite);
   initGCThing(obj, temp, templateObj, initContents);
+}
+
+void MacroAssembler::createGCObjectFromTemplateRegister(
+    Register result, Register templateReg, Register temp,
+    const TemplateNativeObject& layout, gc::Heap initialHeap, Label* fail,
+    const AllocSiteInput& allocSite) {
+  MOZ_ASSERT(layout.numDynamicSlots() == 0);
+  MOZ_ASSERT(!layout.isArrayObject());
+  MOZ_ASSERT(result != templateReg && temp != templateReg);
+
+  allocateObject(result, temp, layout.getAllocKind(), 0, initialHeap, fail,
+                 allocSite);
+
+  loadPtr(Address(templateReg, JSObject::offsetOfShape()), temp);
+  storePtr(temp, Address(result, JSObject::offsetOfShape()));
+  storePtr(ImmPtr(emptyObjectSlots),
+           Address(result, NativeObject::offsetOfSlots()));
+  storePtr(ImmPtr(emptyObjectElements),
+           Address(result, NativeObject::offsetOfElements()));
+
+  uint32_t nslots = layout.slotSpan();
+  if (nslots == 0) {
+    return;
+  }
+  uint32_t nfixed = layout.numUsedFixedSlots();
+  auto [startOfUninitialized, startOfUndefined] =
+      FindStartOfUninitializedAndUndefinedSlots(layout, nslots);
+  MOZ_ASSERT(startOfUninitialized <= nfixed);
+
+  // Copy the leading (reserved) slots from the template.
+  static_assert(sizeof(Value) == sizeof(uintptr_t));
+  for (uint32_t i = 0; i < startOfUninitialized; i++) {
+    size_t offset = NativeObject::getFixedSlotOffset(i);
+    loadPtr(Address(templateReg, offset), temp);
+    storePtr(temp, Address(result, offset));
+  }
+
+  size_t offset = NativeObject::getFixedSlotOffset(startOfUninitialized);
+  fillSlotsWithUninitialized(Address(result, offset), temp,
+                             startOfUninitialized,
+                             std::min(startOfUndefined, nfixed));
+  if (startOfUndefined < nfixed) {
+    offset = NativeObject::getFixedSlotOffset(startOfUndefined);
+    fillSlotsWithUndefined(Address(result, offset), temp, startOfUndefined,
+                           nfixed);
+  }
 }
 
 void MacroAssembler::createPlainGCObject(
@@ -661,15 +710,28 @@ void MacroAssembler::bumpPointerAllocate(Register result, Register temp,
   MOZ_ASSERT(totalSize % gc::CellAlignBytes == 0);
 
   // We know statically whether nursery allocation is enable for a particular
-  // kind because we discard JIT code when this changes.
-  if (!IsNurseryAllocEnabled(zone, traceKind)) {
-    jump(fail);
-    return;
+  // kind because we discard JIT code when this changes. Code compiled without
+  // a zone (realm-independent Baseline code) is shared between zones, so it
+  // checks the current zone at runtime, and must supply an allocation site.
+  if (zone) {
+    if (!IsNurseryAllocEnabled(zone, traceKind)) {
+      jump(fail);
+      return;
+    }
+  } else {
+    MOZ_RELEASE_ASSERT(traceKind == JS::TraceKind::Object);
+    MOZ_RELEASE_ASSERT(allocSite.is<Register>());
+    loadJSContext(temp);
+    loadPtr(Address(temp, JSContext::offsetOfZone()), temp);
+    branch8(Assembler::Equal,
+            Address(temp, JS::Zone::offsetOfAllocNurseryObjects()), Imm32(0),
+            fail);
   }
 
   // Use a relative 32 bit offset to the Nursery position_ to currentEnd_ to
   // avoid 64-bit immediate loads.
-  void* posAddr = zone->addressOfNurseryPosition();
+  void* posAddr = zone ? zone->addressOfNurseryPosition()
+                       : runtime()->addressOfNurseryPosition();
   int32_t endOffset = Nursery::offsetOfCurrentEndFromPosition();
 
   movePtr(ImmPtr(posAddr), temp);
@@ -731,9 +793,11 @@ void MacroAssembler::updateAllocSite(Register temp, Register result,
            Address(site, gc::AllocSite::offsetOfNurseryAllocCount()),
            Imm32(js::gc::NormalSiteAttentionThreshold), &done);
 
-  loadPtr(AbsoluteAddress(zone->addressOfNurseryAllocatedSites()), temp);
+  void* sitesAddr = zone ? zone->addressOfNurseryAllocatedSites()
+                         : runtime()->addressOfNurseryAllocatedSites();
+  loadPtr(AbsoluteAddress(sitesAddr), temp);
   storePtr(temp, Address(site, gc::AllocSite::offsetOfNextNurseryAllocated()));
-  storePtr(site, AbsoluteAddress(zone->addressOfNurseryAllocatedSites()));
+  storePtr(site, AbsoluteAddress(sitesAddr));
 
   bind(&done);
 }
@@ -905,7 +969,7 @@ void MacroAssembler::fillSlotsWithUninitialized(Address base, Register temp,
                              MagicValue(JS_UNINITIALIZED_LEXICAL));
 }
 
-static std::pair<uint32_t, uint32_t> FindStartOfUninitializedAndUndefinedSlots(
+std::pair<uint32_t, uint32_t> jit::FindStartOfUninitializedAndUndefinedSlots(
     const TemplateNativeObject& templateObj, uint32_t nslots) {
   MOZ_ASSERT(nslots == templateObj.slotSpan());
   MOZ_ASSERT(nslots > 0);

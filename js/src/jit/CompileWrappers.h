@@ -81,6 +81,8 @@ class CompileRuntime {
   const void* addressOfJitStackLimitNoInterrupt();
   const void* addressOfInterruptBits();
   const uint32_t* addressOfBaselineWarmUpThreshold();
+  void* addressOfNurseryPosition();
+  void* addressOfNurseryAllocatedSites();
   const void* addressOfRealm();
   const void* addressOfZone();
   const void* addressOfMegamorphicCache();

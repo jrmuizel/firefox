@@ -5892,6 +5892,18 @@ class MacroAssembler : public MacroAssemblerSpecific {
                    const TemplateNativeObject& templateObj);
 
  public:
+  // Like createGCObject, for code shared between scripts (realm-independent
+  // Baseline code). |layout| is a template object with the same AllocKind and
+  // slot layout as the object to create, and |templateReg| holds the template
+  // object to copy the shape and reserved slots from at runtime, so that no
+  // per-script GC things are embedded in the code. Requires that |layout| has
+  // no dynamic slots and isn't an array.
+  void createGCObjectFromTemplateRegister(Register result, Register templateReg,
+                                          Register temp,
+                                          const TemplateNativeObject& layout,
+                                          gc::Heap initialHeap, Label* fail,
+                                          const AllocSiteInput& allocSite);
+
   void createGCObject(Register result, Register temp,
                       const TemplateObject& templateObj, gc::Heap initialHeap,
                       Label* fail, bool initContents = true,
@@ -6410,6 +6422,12 @@ class MOZ_RAII WasmMacroAssembler : public MacroAssembler {
 
 // Heap-allocated MacroAssembler used for off-thread code generation.
 // GC cancels off-thread compilations.
+// Returns the indices of the first uninitialized-lexical slot and of the first
+// undefined slot of the trailing slots of |templateObj|, which the JITs fill
+// with constants instead of copying from the template.
+std::pair<uint32_t, uint32_t> FindStartOfUninitializedAndUndefinedSlots(
+    const TemplateNativeObject& templateObj, uint32_t nslots);
+
 class OffThreadMacroAssembler : public MacroAssembler {
  public:
   OffThreadMacroAssembler(TempAllocator& alloc, CompileRealm* realm);

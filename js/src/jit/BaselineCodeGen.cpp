@@ -475,6 +475,10 @@ bool BaselineCompiler::finishCompile(JSContext* cx) {
   if (UseBaselineCodeCache(script)) {
     // The cache is an optimization, so ignore OOM.
     BaselineCodeCache::Entry entry;
+    entry.callObjectLayout =
+        BaselineCodeCache::EnvironmentLayout::Of(handler.callObjectTemplate());
+    entry.namedLambdaLayout =
+        BaselineCodeCache::EnvironmentLayout::Of(handler.namedLambdaTemplate());
     entry.needsEnvAllocSite = handler.needsEnvAllocSite();
     entry.ionDisabled = handler.analysis().isIonDisabled();
     entry.inliningDisabled = handler.analysis().isInliningDisabled();
@@ -1875,6 +1879,18 @@ static void AssertCanElidePostWriteBarrier(MacroAssembler& masm,
 #endif
 }
 
+// Whether realm-independent code can allocate the function's environment
+// objects inline. See MacroAssembler::createGCObjectFromTemplateRegister.
+static bool CanInlineAllocateEnvironmentsWithoutTemplates(
+    CallObject* callObjectTemplate, NamedLambdaObject* namedLambdaTemplate) {
+#ifdef JS_PUNBOX64
+  return (!callObjectTemplate || callObjectTemplate->numDynamicSlots() == 0) &&
+         (!namedLambdaTemplate || namedLambdaTemplate->numDynamicSlots() == 0);
+#else
+  return false;
+#endif
+}
+
 template <>
 bool BaselineCompilerCodeGen::initEnvironmentChain() {
   if (!handler.isFunction()) {
@@ -1887,10 +1903,17 @@ bool BaselineCompilerCodeGen::initEnvironmentChain() {
   AllocatableGeneralRegisterSet regs(GeneralRegisterSet::All());
   Register temp = regs.takeAny();
   Label done;
-  if (!handler.realmIndependentJitcode()) {
+  bool realmIndependent = handler.realmIndependentJitcode();
+  if (!realmIndependent ||
+      CanInlineAllocateEnvironmentsWithoutTemplates(
+          handler.callObjectTemplate(), handler.namedLambdaTemplate())) {
     // Allocate a NamedLambdaObject and/or a CallObject. If the function needs
     // both, the NamedLambdaObject must enclose the CallObject. If one of the
     // allocations fails, we perform the whole operation in C++.
+    //
+    // Realm-independent code must not embed the templates, so it loads them
+    // from the JitScript and uses the compile-time templates only for their
+    // layout, which BaselineCodeCache checks is the same.
 
     auto callObjectTemplate = handler.callObjectTemplate();
     auto namedLambdaTemplate = handler.namedLambdaTemplate();
@@ -1899,6 +1922,13 @@ bool BaselineCompilerCodeGen::initEnvironmentChain() {
     Register newEnv = regs.takeAny();
     Register enclosingEnv = regs.takeAny();
     Register callee = regs.takeAny();
+    Register templateEnv = InvalidReg;
+    if (realmIndependent) {
+      templateEnv = regs.takeAny();
+      loadJitScript(templateEnv);
+      masm.loadPtr(Address(templateEnv, JitScript::offsetOfTemplateEnv()),
+                   templateEnv);
+    }
     Register siteRegister;
 
     Label fail;
@@ -1917,8 +1947,27 @@ bool BaselineCompilerCodeGen::initEnvironmentChain() {
     // Allocate a NamedLambdaObject if needed.
     if (namedLambdaTemplate) {
       TemplateObject templateObject(namedLambdaTemplate);
-      masm.createGCObject(newEnv, temp, templateObject, gc::Heap::Default,
-                          &fail, true, site);
+      if (realmIndependent) {
+        // If there's also a CallObject, the NamedLambdaObject template is the
+        // CallObject template's enclosing environment.
+        Register lambdaTemplate = templateEnv;
+        if (callObjectTemplate) {
+          lambdaTemplate = regs.takeAny();
+          masm.unboxObject(
+              Address(templateEnv, CallObject::offsetOfEnclosingEnvironment()),
+              lambdaTemplate);
+        }
+        masm.createGCObjectFromTemplateRegister(
+            newEnv, lambdaTemplate, temp,
+            templateObject.asTemplateNativeObject(), gc::Heap::Default, &fail,
+            site);
+        if (callObjectTemplate) {
+          regs.add(lambdaTemplate);
+        }
+      } else {
+        masm.createGCObject(newEnv, temp, templateObject, gc::Heap::Default,
+                            &fail, true, site);
+      }
 
       // Store enclosing environment.
       Address enclosingSlot(newEnv,
@@ -1939,8 +1988,14 @@ bool BaselineCompilerCodeGen::initEnvironmentChain() {
     // Allocate a CallObject if needed.
     if (callObjectTemplate) {
       TemplateObject templateObject(callObjectTemplate);
-      masm.createGCObject(newEnv, temp, templateObject, gc::Heap::Default,
-                          &fail, true, site);
+      if (realmIndependent) {
+        masm.createGCObjectFromTemplateRegister(
+            newEnv, templateEnv, temp, templateObject.asTemplateNativeObject(),
+            gc::Heap::Default, &fail, site);
+      } else {
+        masm.createGCObject(newEnv, temp, templateObject, gc::Heap::Default,
+                            &fail, true, site);
+      }
 
       // Store enclosing environment.
       Address enclosingSlot(newEnv, CallObject::offsetOfEnclosingEnvironment());

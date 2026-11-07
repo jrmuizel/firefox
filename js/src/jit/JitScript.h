@@ -488,6 +488,10 @@ class alignas(uintptr_t) JitScript final
 
   size_t allocBytes() const { return endOffset(); }
 
+  static constexpr size_t offsetOfTemplateEnv() {
+    return offsetof(JitScript, templateEnv_);
+  }
+
   EnvironmentObject* templateEnvironment() const {
     MOZ_ASSERT(flags_.initializedTemplateEnv);
     return templateEnv_;

@@ -75,6 +75,14 @@ const void* CompileRuntime::addressOfJitStackLimitNoInterrupt() {
   return cx->addressOfJitStackLimitNoInterrupt();
 }
 
+void* CompileRuntime::addressOfNurseryPosition() {
+  return runtime()->gc.addressOfNurseryPosition();
+}
+
+void* CompileRuntime::addressOfNurseryAllocatedSites() {
+  return runtime()->gc.addressOfNurseryAllocatedSites();
+}
+
 const uint32_t* CompileRuntime::addressOfBaselineWarmUpThreshold() {
   return runtime()->addressOfBaselineWarmUpThreshold();
 }

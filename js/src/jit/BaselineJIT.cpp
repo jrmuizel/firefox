@@ -27,6 +27,7 @@
 #include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
 #include "jit/MacroAssembler.h"
+#include "jit/TemplateObject.h"
 #include "js/friend/StackLimits.h"  // js::AutoCheckRecursionLimit
 #include "vm/Interpreter.h"
 
@@ -35,6 +36,7 @@
 #include "gc/WeakMap-inl.h"
 #include "jit/JitHints-inl.h"
 #include "jit/JitScript-inl.h"
+#include "jit/TemplateObject-inl.h"
 #include "vm/GeckoProfiler-inl.h"
 #include "vm/JSScript-inl.h"
 #include "vm/Stack-inl.h"
@@ -635,6 +637,27 @@ bool BaselineCodeCache::Key::match(const Key& a, const Lookup& b) {
          a.isIonCompileable == b.isIonCompileable;
 }
 
+/* static */
+BaselineCodeCache::EnvironmentLayout BaselineCodeCache::EnvironmentLayout::Of(
+    NativeObject* templateObj) {
+  EnvironmentLayout layout;
+  if (!templateObj) {
+    return layout;
+  }
+  layout.present = true;
+  layout.allocKind = uint32_t(templateObj->asTenured().getAllocKind());
+  layout.slotSpan = templateObj->slotSpan();
+  if (layout.slotSpan > 0) {
+    TemplateObject tobj(templateObj);
+    auto [startOfUninitialized, startOfUndefined] =
+        FindStartOfUninitializedAndUndefinedSlots(tobj.asTemplateNativeObject(),
+                                                  layout.slotSpan);
+    layout.startOfUninitialized = startOfUninitialized;
+    layout.startOfUndefined = startOfUndefined;
+  }
+  return layout;
+}
+
 bool BaselineCodeCache::put(JSContext* cx, JSScript* script, const Key& key,
                             Entry&& entry) {
   MOZ_ASSERT(script->hasBaselineScript());
@@ -685,6 +708,17 @@ bool BaselineCodeCache::maybeAttach(JSContext* cx, JSScript* script,
   if (!BaselineCompiler::PrepareToCompile(cx, rooted,
                                           key.compileDebugInstrumentation)) {
     return false;
+  }
+
+  // Code that allocates environment objects inline depends on the layout of
+  // the templates, which PrepareToCompile created for |script|.
+  if (script->function() && script->needsFunctionEnvironmentObjects()) {
+    auto [callObjectTemplate, namedLambdaTemplate] =
+        script->jitScript()->functionEnvironmentTemplates(script->function());
+    if (EnvironmentLayout::Of(callObjectTemplate) != entry.callObjectLayout ||
+        EnvironmentLayout::Of(namedLambdaTemplate) != entry.namedLambdaLayout) {
+      return true;
+    }
   }
 
   BaselineScript* baselineScript =

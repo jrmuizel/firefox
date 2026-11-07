@@ -913,6 +913,10 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
     }
   }
   bool allocNurseryObjects() const { return allocNurseryObjects_; }
+  static constexpr size_t offsetOfAllocNurseryObjects() {
+    return offsetof(Zone, allocNurseryObjects_) +
+           decltype(allocNurseryObjects_)::offsetOfValue();
+  }
 
   // Note that this covers both allocating JSStrings themselves in the nursery,
   // as well as (possibly) the character data.
