@@ -957,8 +957,8 @@ bool NativeObject::removeProperty(JSContext* cx, Handle<NativeObject*> obj,
   // in place.
 
   MOZ_ASSERT(map->isDictionary());
-  MOZ_ASSERT(table);
-  MOZ_ASSERT(prop == ptr->propertyInfo());
+  MOZ_ASSERT_IF(table, prop == ptr->propertyInfo());
+  MOZ_ASSERT(prop == propMap->getPropertyInfo(propIndex));
 
   Rooted<DictionaryPropMap*> dictMap(cx, map->asDictionary());
 
@@ -967,7 +967,8 @@ bool NativeObject::removeProperty(JSContext* cx, Handle<NativeObject*> obj,
     obj->freeDictionarySlot(prop.slot());
   }
 
-  DictionaryPropMap::removeProperty(cx, &dictMap, &mapLength, table, ptr);
+  DictionaryPropMap::removeProperty(
+      cx, &dictMap, &mapLength, propMap->asDictionary(), propIndex, table, ptr);
 
   obj->dictionaryShape()->updateNewShape(obj->shape()->objectFlags(), dictMap,
                                          mapLength);

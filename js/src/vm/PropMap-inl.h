@@ -120,10 +120,22 @@ MOZ_ALWAYS_INLINE PropMap* PropMap::lookupPure(uint32_t mapLength,
   return lookupLinear(mapLength, key, index);
 }
 
+inline bool PropMap::shouldCreateTable() const {
+  if (!canHaveTable()) {
+    return false;
+  }
+  if (isDictionary() && !asLinked()->hasTable()) {
+    // Like shared maps, only use a table if there are at least three maps.
+    const PropMap* prev = asLinked()->previous();
+    return prev && prev->hasPrevious();
+  }
+  return true;
+}
+
 // static
 MOZ_ALWAYS_INLINE PropMap* PropMap::lookup(JSContext* cx, uint32_t mapLength,
                                            PropertyKey key, uint32_t* index) {
-  if (canHaveTable()) {
+  if (shouldCreateTable()) {
     JS::AutoCheckCannotGC nogc;
     if (PropMapTable* table = asLinked()->ensureTable(cx, nogc);
         MOZ_LIKELY(table)) {
@@ -169,7 +181,7 @@ inline bool PropMap::lookupForRemove(JSContext* cx, PropMap* map,
                                      PropMap** propMap, uint32_t* propIndex,
                                      PropMapTable** table,
                                      PropMapTable::Ptr* ptr) {
-  if (map->isDictionary()) {
+  if (map->isDictionary() && map->shouldCreateTable()) {
     *table = map->asLinked()->ensureTable(cx, keep);
     if (!*table) {
       return false;

@@ -554,6 +554,11 @@ class PropMap : public gc::TenuredCellWithFlags {
   MOZ_ALWAYS_INLINE PropMap* lookup(JSContext* cx, uint32_t mapLength,
                                     PropertyKey key, uint32_t* index);
 
+  // Returns true if lookups should create a PropMapTable. Similar to shared
+  // maps, small dictionary maps (at most two maps) use a linear lookup to avoid
+  // allocating a table.
+  inline bool shouldCreateTable() const;
+
   static inline bool lookupForRemove(JSContext* cx, PropMap* map,
                                      uint32_t mapLength, PropertyKey key,
                                      const AutoKeepPropMapTables& keep,
@@ -1039,12 +1044,14 @@ class DictionaryPropMap final : public PropMap {
                           uint32_t* mapLength, HandleId id, PropertyFlags flags,
                           uint32_t slot, ObjectFlags* objectFlags);
 
-  // Remove the property referenced by the table pointer. Returns the new
+  // Remove the property at |propMap|/|propIndex|. If |table| is non-null,
+  // |ptr| must point to the table entry for this property. Returns the new
   // map/mapLength. The caller is responsible for generating a new dictionary
   // shape.
   static void removeProperty(JSContext* cx,
                              MutableHandle<DictionaryPropMap*> map,
-                             uint32_t* mapLength, PropMapTable* table,
+                             uint32_t* mapLength, DictionaryPropMap* propMap,
+                             uint32_t propIndex, PropMapTable* table,
                              PropMapTable::Ptr& ptr);
 
   // Turn all sparse elements into dense elements. The caller is responsible
