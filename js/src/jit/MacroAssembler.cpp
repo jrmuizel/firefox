@@ -1462,19 +1462,15 @@ void MacroAssembler::equalStrings(JSOp op, Register input,
   }
 
   // If operands point to the same instance, the strings are trivially equal.
-  Label notPointerEqual, done;
-  branchPtr(Assembler::NotEqual, input, ImmGCPtr(str), &notPointerEqual);
-  {
-    move32(Imm32(isEqual), result);
-    jump(&done);
-  }
-  bind(&notPointerEqual);
+  // Atoms cannot be equal to each other if they point to different strings.
+  // Both cases are handled by comparing the pointers.
+  Label done;
+  cmpPtrSet(cond, input, ImmGCPtr(str), result);
+  branchPtr(Assembler::Equal, input, ImmGCPtr(str), &done);
+  branchTest32(Assembler::NonZero, Address(input, JSString::offsetOfFlags()),
+               Imm32(StringFlags::ATOM_BIT), &done);
   {
     Label setNotEqualResult;
-
-    // Atoms cannot be equal to each other if they point to different strings.
-    branchTest32(Assembler::NonZero, Address(input, JSString::offsetOfFlags()),
-                 Imm32(StringFlags::ATOM_BIT), &setNotEqualResult);
 
     if (str->hasTwoByteChars()) {
       // Pure two-byte strings can't be equal to Latin-1 strings.
