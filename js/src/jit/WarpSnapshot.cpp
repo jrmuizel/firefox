@@ -234,6 +234,13 @@ void WarpInlinedCall::dumpData(GenericPrinter& out) const {
   cacheIRSnapshot_->dumpData(out);
 }
 
+void WarpPolymorphicFunApply::dumpData(GenericPrinter& out) const {
+  out.printf("    funApply: 0x%p\n", static_cast<JSObject*>(funApply_));
+  out.printf("    format: %s\n", format_ == CallFlags::FunApplyArgsObj
+                                     ? "FunApplyArgsObj"
+                                     : "FunApplyArray");
+}
+
 void WarpPolymorphicTypes::dumpData(GenericPrinter& out) const {
   out.printf("    types:\n");
   for (auto& typeData : list_) {
@@ -359,6 +366,10 @@ void WarpBailout::traceData(JSTracer* trc) {
 
 void WarpPolymorphicTypes::traceData(JSTracer* trc) {
   // No GC pointers.
+}
+
+void WarpPolymorphicFunApply::traceData(JSTracer* trc) {
+  TraceOffthreadGCPtr(trc, funApply_, "warp-polymorphic-funapply");
 }
 
 template <typename T>

@@ -74,6 +74,9 @@ class MOZ_STACK_CLASS WarpScriptOracle {
                                       BytecodeLocation loc, ICCacheIRStub* stub,
                                       ICFallbackStub* fallbackStub,
                                       uint8_t* stubDataCopy);
+  AbortReasonOr<bool> maybeInlinePolymorphicFunApply(
+      WarpOpSnapshotList& snapshots, BytecodeLocation loc,
+      ICCacheIRStub* firstStub);
   AbortReasonOr<bool> maybeInlinePolymorphicTypes(WarpOpSnapshotList& snapshots,
                                                   BytecodeLocation loc,
                                                   ICCacheIRStub* firstStub,
@@ -1140,6 +1143,14 @@ AbortReasonOr<Ok> WarpScriptOracle::maybeInlineIC(WarpOpSnapshotList& snapshots,
       }
     }
 
+    if (IsInvokeOp(loc.getOp()) && fallbackStub->enteredCount() == 0) {
+      bool inlinedFunApply =
+          MOZ_TRY(maybeInlinePolymorphicFunApply(snapshots, loc, stub));
+      if (inlinedFunApply) {
+        return Ok();
+      }
+    }
+
     [[maybe_unused]] unsigned line;
     [[maybe_unused]] JS::LimitedColumnNumberOneOrigin column;
     LineNumberAndColumn(script_, loc, &line, &column);
@@ -1580,6 +1591,156 @@ struct TypeFrequency {
     return other.successCount_ < successCount_;
   }
 };
+
+struct FunApplyStubInfo {
+  JSFunction* funApply = nullptr;
+  CallFlags::ArgFormat format = CallFlags::Unknown;
+  mozilla::Maybe<GuardClassKind> argsClass;
+};
+
+// Returns true if |stub| is a |fun.apply(thisArg, args)| stub which guards
+// that the callee is |Function.prototype.apply| and then calls the target
+// function without using any inlinable-native optimizations.
+static bool IsGenericFunApplyStub(ICCacheIRStub* stub, FunApplyStubInfo* info) {
+  const CacheIRStubInfo* stubInfo = stub->stubInfo();
+  const uint8_t* stubData = stub->stubDataStart();
+
+  CacheIRReader reader(stubInfo);
+  size_t opIndex = 0;
+  bool sawCall = false;
+  bool guardsFunApply = false;
+  mozilla::Maybe<GuardClassKind> argsClass;
+
+  while (reader.more()) {
+    CacheOp op = reader.readOp();
+    uint32_t argLength = CacheIROpInfos[size_t(op)].argLength;
+
+    if (sawCall) {
+      return false;
+    }
+
+    switch (op) {
+      case CacheOp::LoadArgumentDynamicSlot:
+      case CacheOp::LoadArgumentFixedSlot:
+      case CacheOp::GuardToObject:
+      case CacheOp::GuardShape:
+      case CacheOp::GuardNotClassConstructor:
+      case CacheOp::GuardFunctionHasJitEntry:
+      case CacheOp::GuardFunctionHasNoJitEntry:
+      case CacheOp::GuardFunctionScript:
+      case CacheOp::GuardArgumentsObjectFlags:
+      case CacheOp::GuardArrayIsPacked:
+        reader.skip(argLength);
+        break;
+      case CacheOp::GuardSpecificFunction: {
+        auto args = reader.argsForGuardSpecificFunction();
+        if (opIndex == 2) {
+          // The third op guards the callee.
+          uintptr_t raw =
+              stubInfo->getStubRawWord(stubData, args.expectedOffset);
+          auto* fun = reinterpret_cast<JSFunction*>(raw);
+          if (!fun->isNativeFun() || fun->native() != fun_apply) {
+            return false;
+          }
+          if (info->funApply && info->funApply != fun) {
+            return false;
+          }
+          info->funApply = fun;
+          guardsFunApply = true;
+        }
+        break;
+      }
+      case CacheOp::GuardClass: {
+        auto args = reader.argsForGuardClass();
+        if (args.kind == GuardClassKind::MappedArguments ||
+            args.kind == GuardClassKind::UnmappedArguments ||
+            args.kind == GuardClassKind::Array) {
+          argsClass = mozilla::Some(args.kind);
+        } else if (args.kind != GuardClassKind::JSFunction) {
+          return false;
+        }
+        break;
+      }
+      case CacheOp::CallScriptedFunction:
+      case CacheOp::CallNativeFunction: {
+        CallFlags flags;
+        if (op == CacheOp::CallScriptedFunction) {
+          flags = reader.argsForCallScriptedFunction().flags;
+        } else {
+          flags = reader.argsForCallNativeFunction().flags;
+        }
+        CallFlags::ArgFormat format = flags.getArgFormat();
+        if (format != CallFlags::FunApplyArgsObj &&
+            format != CallFlags::FunApplyArray) {
+          return false;
+        }
+        if (info->format != CallFlags::Unknown && info->format != format) {
+          return false;
+        }
+        info->format = format;
+        sawCall = true;
+        break;
+      }
+      default:
+        return false;
+    }
+
+    // The callee guard must be the first guard in the stub.
+    if (opIndex == 2 && !guardsFunApply) {
+      return false;
+    }
+    opIndex++;
+  }
+
+  if (!sawCall || !guardsFunApply) {
+    return false;
+  }
+
+  if (info->format == CallFlags::FunApplyArgsObj) {
+    if (!argsClass || (*argsClass != GuardClassKind::MappedArguments &&
+                       *argsClass != GuardClassKind::UnmappedArguments)) {
+      return false;
+    }
+  } else {
+    // The array class guard may have been emitted as a shape guard.
+    if (argsClass && *argsClass != GuardClassKind::Array) {
+      return false;
+    }
+    argsClass = mozilla::Some(GuardClassKind::Array);
+  }
+
+  if (info->argsClass && *info->argsClass != *argsClass) {
+    return false;
+  }
+  info->argsClass = argsClass;
+  return true;
+}
+
+AbortReasonOr<bool> WarpScriptOracle::maybeInlinePolymorphicFunApply(
+    WarpOpSnapshotList& snapshots, BytecodeLocation loc,
+    ICCacheIRStub* firstStub) {
+  // If all stubs are |fun.apply| stubs with different targets, we can still
+  // compile a generic apply call instead of calling the |fun_apply| native.
+  FunApplyStubInfo info;
+  for (ICStub* stub = firstStub; !stub->isFallback();
+       stub = stub->maybeNext()) {
+    if (!IsGenericFunApplyStub(stub->toCacheIRStub(), &info)) {
+      return false;
+    }
+  }
+
+  if (IsInsideNursery(info.funApply)) {
+    return false;
+  }
+
+  uint32_t offset = loc.bytecodeToOffset(script_);
+  if (!AddOpSnapshot<WarpPolymorphicFunApply>(alloc_, snapshots, offset,
+                                              info.funApply, info.format,
+                                              *info.argsClass)) {
+    return abort(AbortReason::Alloc);
+  }
+  return true;
+}
 
 AbortReasonOr<bool> WarpScriptOracle::maybeInlinePolymorphicTypes(
     WarpOpSnapshotList& snapshots, BytecodeLocation loc,

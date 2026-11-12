@@ -17,6 +17,7 @@
 #include "jit/WarpCacheIRTranspiler.h"
 #include "jit/WarpSnapshot.h"
 #include "js/friend/ErrorMessages.h"  // JSMSG_BAD_CONST_ASSIGN
+#include "vm/ArgumentsObject.h"
 #include "vm/ConstantCompareOperand.h"
 #include "vm/GeneratorObject.h"
 #include "vm/Interpreter.h"
@@ -2247,6 +2248,10 @@ bool WarpBuilder::buildCallOp(BytecodeLocation loc) {
     return transpileCall(loc, cacheIRSnapshot, &callInfo);
   }
 
+  if (const auto* applySnapshot = getOpSnapshot<WarpPolymorphicFunApply>(loc)) {
+    return buildPolymorphicFunApply(loc, applySnapshot, callInfo);
+  }
+
   if (getOpSnapshot<WarpBailout>(loc)) {
     callInfo.setImplicitlyUsedUnchecked();
     return buildBailoutForColdIC(loc, CacheKind::Call);
@@ -2266,6 +2271,79 @@ bool WarpBuilder::buildCallOp(BytecodeLocation loc) {
   current->add(call);
   current->push(call);
   return resumeAfter(call, loc);
+}
+
+bool WarpBuilder::buildPolymorphicFunApply(
+    BytecodeLocation loc, const WarpPolymorphicFunApply* snapshot,
+    CallInfo& callInfo) {
+  MOZ_ASSERT(!callInfo.constructing());
+  MOZ_ASSERT(callInfo.argc() == 2);
+
+  // Bailouts are handled like bailouts from transpiled CacheIR: the Baseline
+  // IC will attach a new stub, which invalidates this Warp script.
+  auto add = [&](MInstruction* ins) {
+    ins->setBailoutKind(BailoutKind::TranspiledCacheIR);
+    current->add(ins);
+  };
+
+  auto guardToObject = [&](MDefinition* def) -> MDefinition* {
+    if (def->type() == MIRType::Object) {
+      return def;
+    }
+    auto* ins = MUnbox::New(alloc(), def, MIRType::Object, MUnbox::Fallible);
+    add(ins);
+    return ins;
+  };
+
+  JSFunction* funApply = snapshot->funApply();
+  MDefinition* callee = guardToObject(callInfo.callee());
+  auto* guardCallee = MGuardSpecificFunction::New(
+      alloc(), callee, constant(ObjectValue(*funApply)), funApply->nargs(),
+      funApply->flags());
+  add(guardCallee);
+
+  MDefinition* target = guardToObject(callInfo.thisArg());
+  auto* targetFun = MGuardToFunction::New(alloc(), target);
+  add(targetFun);
+
+  MDefinition* thisArg = callInfo.getArg(0);
+  MDefinition* args = guardToObject(callInfo.getArg(1));
+  auto* argsGuard =
+      MGuardToClass::New(alloc(), args, ClassFor(snapshot->argsClass()));
+  add(argsGuard);
+
+  MInstruction* apply;
+  if (snapshot->format() == CallFlags::FunApplyArgsObj) {
+    uint8_t flags = ArgumentsObject::ELEMENT_OVERRIDDEN_BIT |
+                    ArgumentsObject::FORWARDED_ARGUMENTS_BIT;
+    auto* argsObj = MGuardArgumentsObjectFlags::New(alloc(), argsGuard, flags);
+    add(argsObj);
+
+    auto* applyArgsObj =
+        MApplyArgsObj::New(alloc(), nullptr, targetFun, argsObj, thisArg);
+    if (callInfo.ignoresReturnValue()) {
+      applyArgsObj->setIgnoresReturnValue();
+    }
+    apply = applyArgsObj;
+  } else {
+    MOZ_ASSERT(snapshot->format() == CallFlags::FunApplyArray);
+    auto* packed = MGuardArrayIsPacked::New(alloc(), argsGuard);
+    add(packed);
+
+    auto* elements = MElements::New(alloc(), packed);
+    current->add(elements);
+
+    auto* applyArray =
+        MApplyArray::New(alloc(), nullptr, targetFun, elements, thisArg);
+    if (callInfo.ignoresReturnValue()) {
+      applyArray->setIgnoresReturnValue();
+    }
+    apply = applyArray;
+  }
+
+  add(apply);
+  current->push(apply);
+  return resumeAfter(apply, loc);
 }
 
 bool WarpBuilder::build_Call(BytecodeLocation loc) { return buildCallOp(loc); }

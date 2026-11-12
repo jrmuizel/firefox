@@ -9,6 +9,7 @@
 #include "mozilla/Variant.h"
 
 #include "builtin/ModuleObject.h"
+#include "jit/CacheIR.h"
 #include "jit/JitAllocPolicy.h"
 #include "jit/JitContext.h"
 #include "jit/JitZone.h"
@@ -48,7 +49,8 @@ class WarpScriptSnapshot;
   _(WarpCacheIRWithShapeList)           \
   _(WarpCacheIRWithShapeListAndOffsets) \
   _(WarpInlinedCall)                    \
-  _(WarpPolymorphicTypes)
+  _(WarpPolymorphicTypes)               \
+  _(WarpPolymorphicFunApply)
 
 // WarpOpSnapshot is the base class for data attached to a single bytecode op by
 // WarpOracle. This is typically data that WarpBuilder can't read off-thread
@@ -452,6 +454,38 @@ class WarpPolymorphicTypes : public WarpOpSnapshot {
       : WarpOpSnapshot(ThisKind, offset), list_(list) {}
 
   const TypeDataList& list() const { return list_; }
+
+  void traceData(JSTracer* trc);
+
+#ifdef JS_JITSPEW
+  void dumpData(GenericPrinter& out) const;
+#endif
+};
+
+// Information for a |fun.apply(thisArg, args)| call where |fun| is
+// polymorphic, but all call stubs guard on |Function.prototype.apply| and use
+// the same argument format.
+class WarpPolymorphicFunApply : public WarpOpSnapshot {
+  OffthreadGCPtr<JSObject*> funApply_;
+  CallFlags::ArgFormat format_;
+  GuardClassKind argsClass_;
+
+ public:
+  static constexpr Kind ThisKind = Kind::WarpPolymorphicFunApply;
+
+  WarpPolymorphicFunApply(uint32_t offset, JSFunction* funApply,
+                          CallFlags::ArgFormat format, GuardClassKind argsClass)
+      : WarpOpSnapshot(ThisKind, offset),
+        funApply_(funApply),
+        format_(format),
+        argsClass_(argsClass) {
+    MOZ_ASSERT(format == CallFlags::FunApplyArgsObj ||
+               format == CallFlags::FunApplyArray);
+  }
+
+  JSFunction* funApply() const { return &funApply_->as<JSFunction>(); }
+  CallFlags::ArgFormat format() const { return format_; }
+  GuardClassKind argsClass() const { return argsClass_; }
 
   void traceData(JSTracer* trc);
 

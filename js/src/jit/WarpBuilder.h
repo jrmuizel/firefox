@@ -298,6 +298,9 @@ class MOZ_STACK_CLASS WarpBuilder : public WarpBuilderShared {
   [[nodiscard]] bool buildStrictConstantEqOp(BytecodeLocation loc, JSOp op);
   [[nodiscard]] bool buildTestOp(BytecodeLocation loc);
   [[nodiscard]] bool buildCallOp(BytecodeLocation loc);
+  [[nodiscard]] bool buildPolymorphicFunApply(
+      BytecodeLocation loc, const WarpPolymorphicFunApply* snapshot,
+      CallInfo& callInfo);
 
   [[nodiscard]] bool buildInitPropGetterSetterOp(BytecodeLocation loc);
   [[nodiscard]] bool buildInitElemGetterSetterOp(BytecodeLocation loc);
