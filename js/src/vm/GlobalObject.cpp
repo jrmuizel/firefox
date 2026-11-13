@@ -1069,6 +1069,8 @@ void GlobalObjectData::trace(JSTracer* trc, GlobalObject* global) {
   TraceEdge(trc, &setObjectTemplate, "set-object-template");
 
   TraceEdge(trc, &iterResultTemplate, "iter-result-template_");
+  TraceEdge(trc, &dataDescriptorTemplate, "data-descriptor-template");
+  TraceEdge(trc, &accessorDescriptorTemplate, "accessor-descriptor-template");
 
   TraceEdge(trc, &selfHostingScriptSource, "self-hosting-script-source");
 }

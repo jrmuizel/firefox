@@ -219,6 +219,10 @@ class GlobalObjectData {
 
   GCPtr<PlainObject*> iterResultTemplate;
 
+  // Template objects for the result of Object.getOwnPropertyDescriptor.
+  GCPtr<PlainObject*> dataDescriptorTemplate;
+  GCPtr<PlainObject*> accessorDescriptorTemplate;
+
   // Lazily initialized script source object to use for scripts cloned from the
   // self-hosting stencil.
   GCPtr<ScriptSourceObject*> selfHostingScriptSource;
@@ -1009,6 +1013,16 @@ class GlobalObject : public NativeObject {
   static const size_t IterResultObjectValueSlot = 0;
   static const size_t IterResultObjectDoneSlot = 1;
   static js::PlainObject* getOrCreateIterResultTemplateObject(JSContext* cx);
+
+  // Slots of the data descriptor template object: {value, writable,
+  // enumerable, configurable}, and of the accessor descriptor template object:
+  // {get, set, enumerable, configurable}.
+  static const size_t DescriptorValueOrGetterSlot = 0;
+  static const size_t DescriptorWritableOrSetterSlot = 1;
+  static const size_t DescriptorEnumerableSlot = 2;
+  static const size_t DescriptorConfigurableSlot = 3;
+  static js::PlainObject* getOrCreatePropertyDescriptorTemplateObject(
+      JSContext* cx, bool accessor);
 
  private:
   static js::PlainObject* createIterResultTemplateObject(JSContext* cx);

@@ -42,6 +42,7 @@
 #include "vm/GeckoProfiler-inl.h"
 #include "vm/JSObject-inl.h"
 #include "vm/NativeObject-inl.h"
+#include "vm/PlainObject-inl.h"
 #include "vm/Shape-inl.h"
 
 #ifdef FUZZING
@@ -1552,6 +1553,174 @@ bool js::GetOwnPropertyDescriptorToArray(JSContext* cx, unsigned argc,
   return FromPropertyDescriptorToArray(cx, desc, args.rval());
 }
 
+PlainObject* GlobalObject::getOrCreatePropertyDescriptorTemplateObject(
+    JSContext* cx, bool accessor) {
+  GCPtr<PlainObject*>& obj =
+      accessor ? cx->global()->data().accessorDescriptorTemplate
+               : cx->global()->data().dataDescriptorTemplate;
+  if (obj) {
+    return obj;
+  }
+
+  Rooted<PlainObject*> templateObject(
+      cx, NewPlainObject(cx, {.newKind = TenuredObject,
+                              .allocKind = gc::AllocKind::OBJECT4}));
+  if (!templateObject) {
+    return nullptr;
+  }
+
+  const JSAtomState& names = cx->names();
+  PropertyName* keys[] = {
+      accessor ? names.get : names.value,
+      accessor ? names.set : names.writable,
+      names.enumerable,
+      names.configurable,
+  };
+  for (PropertyName* key : keys) {
+    if (!NativeDefineDataProperty(cx, templateObject, key, UndefinedHandleValue,
+                                  JSPROP_ENUMERATE)) {
+      return nullptr;
+    }
+  }
+
+#ifdef DEBUG
+  for (size_t i = 0; i < std::size(keys); i++) {
+    mozilla::Maybe<PropertyInfo> prop =
+        templateObject->lookupPure(NameToId(keys[i]));
+    MOZ_ASSERT(prop.isSome() && prop->slot() == i);
+  }
+#endif
+
+  obj.init(templateObject);
+  return obj;
+}
+
+// FromPropertyDescriptor for a complete property descriptor. Uses a template
+// object for the result object.
+static PlainObject* FromCompletePropertyDescriptor(JSContext* cx, bool accessor,
+                                                   HandleValue valueOrGetter,
+                                                   HandleValue writableOrSetter,
+                                                   bool enumerable,
+                                                   bool configurable) {
+  Rooted<PlainObject*> templateObject(
+      cx,
+      GlobalObject::getOrCreatePropertyDescriptorTemplateObject(cx, accessor));
+  if (!templateObject) {
+    return nullptr;
+  }
+
+  // Steps 2-10.
+  PlainObject* result = PlainObject::createWithTemplate(cx, templateObject);
+  if (!result) {
+    return nullptr;
+  }
+  result->setSlot(GlobalObject::DescriptorValueOrGetterSlot, valueOrGetter);
+  result->setSlot(GlobalObject::DescriptorWritableOrSetterSlot,
+                  writableOrSetter);
+  result->setSlot(GlobalObject::DescriptorEnumerableSlot,
+                  BooleanValue(enumerable));
+  result->setSlot(GlobalObject::DescriptorConfigurableSlot,
+                  BooleanValue(configurable));
+
+  // Step 11.
+  return result;
+}
+
+static Value GetterSetterValue(JSObject* obj) {
+  return obj ? ObjectValue(*obj) : UndefinedValue();
+}
+
+// ECMAScript Language Specification
+// 20.1.2.8 Object.getOwnPropertyDescriptor ( O, P )
+static bool obj_getOwnPropertyDescriptor(JSContext* cx, unsigned argc,
+                                         Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "Object",
+                                        "getOwnPropertyDescriptor");
+  CallArgs args = CallArgsFromVp(argc, vp);
+
+  // Step 1.
+  RootedObject obj(cx, ToObject(cx, args.get(0)));
+  if (!obj) {
+    return false;
+  }
+
+  // Step 2.
+  RootedId id(cx);
+  if (!ToPropertyKey(cx, args.get(1), &id)) {
+    return false;
+  }
+
+  RootedValue valueOrGetter(cx);
+  RootedValue writableOrSetter(cx);
+
+  // Fast path for native objects if the property is either stored in the
+  // shape or can't exist.
+  if (obj->is<NativeObject>() && !obj->getOpsGetOwnPropertyDescriptor() &&
+      !id.isInt()) {
+    NativeObject* nobj = &obj->as<NativeObject>();
+    mozilla::Maybe<PropertyInfo> prop = nobj->lookup(cx, id);
+    if (prop.isNothing() && !nobj->is<TypedArrayObject>() &&
+        !ClassMayResolveId(cx->names(), nobj->getClass(), id, nobj)) {
+      args.rval().setUndefined();
+      return true;
+    }
+    if (prop.isSome() && !prop->isCustomDataProperty()) {
+      bool accessor = prop->isAccessorProperty();
+      if (accessor) {
+        valueOrGetter.set(GetterSetterValue(nobj->getGetter(*prop)));
+        writableOrSetter.set(GetterSetterValue(nobj->getSetter(*prop)));
+      } else {
+        valueOrGetter.set(nobj->getSlot(prop->slot()));
+        writableOrSetter.setBoolean(prop->writable());
+      }
+      PlainObject* result = FromCompletePropertyDescriptor(
+          cx, accessor, valueOrGetter, writableOrSetter, prop->enumerable(),
+          prop->configurable());
+      if (!result) {
+        return false;
+      }
+      args.rval().setObject(*result);
+      return true;
+    }
+  }
+
+  // Step 3.
+  Rooted<Maybe<PropertyDescriptor>> desc(cx);
+  if (!GetOwnPropertyDescriptor(cx, obj, id, &desc)) {
+    return false;
+  }
+
+  // Step 4 (Call to FromPropertyDescriptor).
+
+  // FromPropertyDescriptor, step 1.
+  if (desc.isNothing()) {
+    args.rval().setUndefined();
+    return true;
+  }
+
+  // [[GetOwnProperty]] always returns a complete property descriptor.
+  MOZ_ASSERT(desc->hasConfigurable() && desc->hasEnumerable());
+  bool accessor = desc->isAccessorDescriptor();
+  if (accessor) {
+    MOZ_ASSERT(desc->hasGetter() && desc->hasSetter());
+    valueOrGetter.set(GetterSetterValue(desc->getter()));
+    writableOrSetter.set(GetterSetterValue(desc->setter()));
+  } else {
+    MOZ_ASSERT(desc->hasValue() && desc->hasWritable());
+    valueOrGetter.set(desc->value());
+    writableOrSetter.setBoolean(desc->writable());
+  }
+
+  PlainObject* result = FromCompletePropertyDescriptor(
+      cx, accessor, valueOrGetter, writableOrSetter, desc->enumerable(),
+      desc->configurable());
+  if (!result) {
+    return false;
+  }
+  args.rval().setObject(*result);
+  return true;
+}
+
 static bool NewValuePair(JSContext* cx, HandleValue val1, HandleValue val2,
                          MutableHandleValue rval,
                          gc::Heap heap = gc::Heap::Default) {
@@ -2318,8 +2487,7 @@ static const JSFunctionSpec object_static_methods[] = {
     JS_FN("assign", obj_assign, 2, 0),
     JS_SELF_HOSTED_FN("getPrototypeOf", "ObjectGetPrototypeOf", 1, 0),
     JS_FN("setPrototypeOf", obj_setPrototypeOf, 2, 0),
-    JS_SELF_HOSTED_FN("getOwnPropertyDescriptor",
-                      "ObjectGetOwnPropertyDescriptor", 2, 0),
+    JS_FN("getOwnPropertyDescriptor", obj_getOwnPropertyDescriptor, 2, 0),
     JS_SELF_HOSTED_FN("getOwnPropertyDescriptors",
                       "ObjectGetOwnPropertyDescriptors", 1, 0),
     JS_INLINABLE_FN("keys", obj_keys, 1, 0, ObjectKeys),
